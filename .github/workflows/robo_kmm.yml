@@ -1,0 +1,29 @@
+name: Executar Robo KMM e Atualizar Google Sheets
+
+on:
+  schedule:
+    # Roda a cada 3 horas automaticamente
+    - cron: '0 */3 * * *'
+  workflow_dispatch: # Permite acionar manualmente no painel do GitHub se quiser
+
+jobs:
+  executar:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Baixar o código do repositório
+        uses: actions/checkout@v3
+
+      - name: Configurar o Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Instalar Dependências e Playwright
+        run: |
+          python -m pip install --upgrade pip
+          pip install playwright pandas openpyxl requests
+          playwright install --with-deps chromium
+
+      - name: Executar o Robô KMM
+        run: python acesso_kmm.py
