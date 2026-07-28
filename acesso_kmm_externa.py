@@ -1,16 +1,13 @@
 from playwright.sync_api import sync_playwright
-from bs4 import BeautifulSoup
 import pandas as pd
 import requests
 import time
-import io
 import os
 
-# Webhook da Nova Planilha de Manutenção Externa
-URL_WEBHOOK = "https://script.google.com/macros/s/AKfycbzhscaxcYlRi5urF2Rtp13Uv4T9eKQGWSgk-bSL1di7dtRVGdn-hZRWCMuHULKVGtGOXw/exec"
+URL_WEBHOOK_EXTERNA = "https://script.google.com/macros/s/AKfycbzhscaxcYlRi5urF2Rtp13Uv4T9eKQGWSgk-bSL1di7dtRVGdn-hZRWCMuHULKVGtGOXw/exec"
 
 def executar_robo_manutencao_externa():
-    print("🚀 Iniciando Robô: Relatório de Manutenção Externa...")
+    print("🚀 Iniciando Robô 2: Relatório de Manutenção Externa...")
     
     usuario = os.environ.get("KMM_USER", "matheusd")
     senha = os.environ.get("KMM_PASS", "328254Ma")
@@ -20,7 +17,7 @@ def executar_robo_manutencao_externa():
         contexto = navegador.new_context()
         pagina = contexto.new_page()
 
-        print("1. Acessando o KMM e efetuando login...")
+        print("1. Acessando o KMM e fazendo login...")
         pagina.goto("https://kmm.pizzattolog.com.br/index.cfm")
         pagina.locator("input[type='text']").first.fill(usuario)
         campo_senha = pagina.locator("input[type='password']").first
@@ -85,103 +82,75 @@ def executar_robo_manutencao_externa():
         pagina.wait_for_load_state("networkidle")
         time.sleep(8)
 
-        print("6. Rolando a tela para carregar todos os registros...")
-        for _ in range(15):
-            pagina.keyboard.press("PageDown")
-            time.sleep(0.15)
+        # Rolagem para carregar grid ExtJS
+        for _ in range(10):
             for f in pagina.frames:
                 try:
-                    f.evaluate("window.scrollBy(0, 1000);")
                     f.evaluate("let s = document.querySelector('.x-grid3-scroller'); if(s) s.scrollTop += 1000;")
                 except:
                     pass
+            time.sleep(0.2)
 
-        time.sleep(2)
+        print("6. Extraindo dados da grade ExtJS do KMM...")
+        dados_capturados = None
 
-        print("7. Extraindo tabela de dados do KMM...")
-        dfs_encontrados = []
-        
-        # Estratégia 1: Leitura de tabelas HTML puras
         for frame in pagina.frames:
             try:
-                html_content = frame.content()
-                if "Frota" in html_content or "Placa" in html_content:
-                    tables = pd.read_html(io.StringIO(html_content))
-                    for t in tables:
-                        if len(t) > 0:
-                            dfs_encontrados.append(t)
+                res = frame.evaluate('''() => {
+                    let hdCells = document.querySelectorAll('.x-grid3-header .x-grid3-hd-inner');
+                    let headers = [];
+                    hdCells.forEach(hd => {
+                        let txt = hd.innerText.replace(/\\n/g, ' ').trim();
+                        if (txt) headers.push(txt);
+                    });
+
+                    let rowElems = document.querySelectorAll('.x-grid3-row');
+                    let rows = [];
+                    rowElems.forEach(row => {
+                        let cells = row.querySelectorAll('.x-grid3-cell-inner');
+                        let rowData = [];
+                        cells.forEach(c => rowData.push(c.innerText.trim()));
+                        if (rowData.length > 0) rows.push(rowData);
+                    });
+
+                    return { headers: headers, rows: rows };
+                }''')
+
+                if res and res.get('rows') and len(res['rows']) > 0:
+                    dados_capturados = res
+                    break
             except:
                 continue
 
-        # Estratégia 2: Fallback por texto bruto caso não ache tabela HTML
-        if not dfs_encontrados:
-            linhas_brutas = []
-            for frame in pagina.frames:
-                try:
-                    texto_completo = frame.locator("body").inner_text()
-                    if texto_completo and len(texto_completo) > 100:
-                        linhas = texto_completo.split("\n")
-                        for l in linhas:
-                            l_limpa = l.strip()
-                            if l_limpa:
-                                partes = [p.strip() for p in l_limpa.split("\t") if p.strip()]
-                                if not partes:
-                                    partes = [l_limpa]
-                                linhas_brutas.append(partes)
-                except:
-                    continue
-            
-            if linhas_brutas:
-                max_cols = max(len(linha) for linha in linhas_brutas)
-                linhas_padronizadas = [linha + [""] * (max_cols - len(linha)) for linha in linhas_brutas]
-                dfs_encontrados.append(pd.DataFrame(linhas_padronizadas))
-
         navegador.close()
 
-        print("8. Processando e limpando o relatório...")
-        df_final = None
+        if dados_capturados:
+            headers = dados_capturados['headers']
+            rows = dados_capturados['rows']
 
-        for df_temp in dfs_encontrados:
-            # Procura a linha que contém o cabeçalho 'Frota'
-            idx_cabecalho = None
-            for idx, row in df_temp.iterrows():
-                texto_linha = " ".join([str(v).lower() for v in row.values])
-                if "frota" in texto_linha and ("placa" in texto_linha or "os" in texto_linha or "oficina" in texto_linha):
-                    idx_cabecalho = idx
-                    break
+            max_cols = max(len(r) for r in rows)
+            rows_padronizadas = [r + [""] * (max_cols - len(r)) for r in rows]
 
-            if idx_cabecalho is not None:
-                # Corta tudo acima do cabeçalho
-                df_certo = df_temp.iloc[idx_cabecalho:].reset_index(drop=True)
-                df_certo.columns = [str(c).strip() for c in df_certo.iloc[0].values]
-                df_certo = df_certo.iloc[1:].reset_index(drop=True)
-                
-                # Remove linhas duplicadas de cabeçalho e vazias
-                df_certo = df_certo[df_certo[df_certo.columns[0]].astype(str).str.lower() != str(df_certo.columns[0]).lower()]
-                df_certo.fillna("", inplace=True)
-                df_certo.dropna(how='all', inplace=True)
-                df_certo.drop_duplicates(inplace=True)
-                df_certo.reset_index(drop=True, inplace=True)
-                
-                df_final = df_certo
-                break
+            df = pd.DataFrame(rows_padronizadas)
+            if len(headers) == max_cols:
+                df.columns = headers
+            else:
+                df.columns = [f"Col_{i}" for i in range(max_cols)]
 
-        if df_final is not None and len(df_final) > 0:
-            # Prepara matriz para envio
-            dados_envio = [df_final.columns.tolist()] + df_final.values.tolist()
+            df.fillna("", inplace=True)
+            df.drop_duplicates(inplace=True)
 
-            print(f"9. Enviando {len(df_final)} registros para o Google Sheets...")
-            resposta = requests.post(URL_WEBHOOK, json={"dados": dados_envio})
+            dados_envio = [df.columns.tolist()] + df.values.tolist()
+
+            print(f"7. Enviando {len(df)} registros para a Planilha Externa...")
+            resposta = requests.post(URL_WEBHOOK_EXTERNA, json={"dados": dados_envio})
 
             if resposta.status_code == 200 and "Sucesso" in resposta.text:
-                print("\n==================================================")
-                print(" ✨ PLANILHA ONLINE ATUALIZADA COM SUCESSO!")
-                print(f" 📊 Total de registros enviados: {len(df_final)}")
-                print("==================================================")
+                print(" ✨ PLANILHA 2 ATUALIZADA COM SUCESSO!")
             else:
-                print(f"\n[ERRO] Falha ao enviar para o Google Sheets: {resposta.text}")
+                print(f"[ERRO Webhook]: {resposta.text}")
         else:
-            print("\n[ERRO] Nenhum registro com o cabeçalho 'Frota' foi localizado.")
+            print("[ERRO] Nenhuma linha foi extraída do KMM.")
 
 if __name__ == "__main__":
     executar_robo_manutencao_externa()
