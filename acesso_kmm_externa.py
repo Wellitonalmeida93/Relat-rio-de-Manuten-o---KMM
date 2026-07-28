@@ -15,6 +15,7 @@ def executar_robo_manutencao_externa():
 
     with sync_playwright() as p:
         navegador = p.chromium.launch(headless=True)
+        # Resolução Full HD obrigatória
         contexto = navegador.new_context(viewport={"width": 1920, "height": 1080})
         pagina = contexto.new_page()
 
@@ -50,39 +51,75 @@ def executar_robo_manutencao_externa():
 
         clicar_menu("Veículos em manutenção")
         pagina.wait_for_load_state("networkidle")
-        time.sleep(4)
+        
+        # Pausa crucial para os frames internos terminarem de renderizar
+        print("   -> Aguardando formulário da tela carregar...")
+        time.sleep(6)
 
-        print("3. Selecionando '--Manutenção Externa--' na caixa de Filial...")
+        print("3. Selecionando '--Manutenção Externa--'...")
         selecionado = False
 
-        # Injeta JS em todos os frames para alterar o <select> da Filial
         for frame in pagina.frames:
             try:
-                opcao_selecionada = frame.evaluate('''() => {
-                    let selects = document.querySelectorAll('select');
-                    for (let sel of selects) {
-                        for (let i = 0; i < sel.options.length; i++) {
-                            let txt = sel.options[i].text.toUpperCase();
-                            if (txt.includes('MANUTENÇÃO EXTERNA') || txt.includes('MANUTENCAO EXTERNA') || txt.includes('EXTERNA')) {
-                                sel.selectedIndex = i;
-                                sel.dispatchEvent(new Event('change', { bubbles: true }));
-                                sel.dispatchEvent(new Event('blur', { bubbles: true }));
-                                return sel.options[i].text;
-                            }
-                        }
-                    }
-                    return null;
-                }''')
+                # Espera a presença do texto 'Filial' ou select no frame
+                txt_frame = frame.locator("body").inner_text(timeout=2000)
+                if "FILIAL" in txt_frame.upper() or "EXTERNA" in txt_frame.upper():
+                    
+                    # Tentativa 1: Seleção direta via API do Playwright
+                    selects = frame.locator("select").all()
+                    for sel in selects:
+                        try:
+                            sel.select_option(label="--Manutenção Externa--", timeout=2000)
+                            sel.dispatch_event("change")
+                            selecionado = True
+                            print("   -> Seleção realizada com sucesso via Playwright!")
+                            break
+                        except:
+                            pass
 
-                if opcao_selecionada:
-                    print(f"   -> Sucesso! Opção selecionada no DOM: '{opcao_selecionada}'")
-                    selecionado = True
-                    break
+                    # Tentativa 2: JS Nativo varrendo as opções
+                    if not selecionado:
+                        res = frame.evaluate('''() => {
+                            let selects = document.querySelectorAll('select');
+                            for (let sel of selects) {
+                                for (let i = 0; i < sel.options.length; i++) {
+                                    let txt = sel.options[i].text.toUpperCase();
+                                    if (txt.includes('MANUTENÇÃO EXTERNA') || txt.includes('MANUTENCAO EXTERNA') || txt.includes('EXTERNA')) {
+                                        sel.selectedIndex = i;
+                                        sel.dispatchEvent(new Event('change', { bubbles: true }));
+                                        sel.dispatchEvent(new Event('blur', { bubbles: true }));
+                                        return sel.options[i].text;
+                                    }
+                                }
+                            }
+                            return null;
+                        }''')
+                        if res:
+                            selecionado = True
+                            print(f"   -> Seleção realizada via JS: '{res}'")
+                            break
             except:
                 continue
 
+            if selecionado:
+                break
+
         if not selecionado:
-            print("   [AVISO] Não foi possível encontrar a caixa <select> via JS nativo. Tentando fallback...")
+            print("   [AVISO] Tentando selecionar por clique no elemento do ExtJS...")
+            for frame in pagina.frames:
+                try:
+                    trigger = frame.locator(".x-form-arrow-trigger, input").first
+                    if trigger.is_visible(timeout=1000):
+                        trigger.click(force=True)
+                        time.sleep(1)
+                        opcao = frame.get_by_text("--Manutenção Externa--", exact=False).first
+                        if opcao.is_visible(timeout=1000):
+                            opcao.click(force=True)
+                            selecionado = True
+                            print("   -> Seleção realizada via clique no Combo ExtJS!")
+                            break
+                except:
+                    continue
 
         time.sleep(2)
 
@@ -117,8 +154,8 @@ def executar_robo_manutencao_externa():
         pagina.wait_for_load_state("networkidle")
         time.sleep(12)
 
-        # Rola o scroll interno da grade ExtJS para forçar carregamento
-        for _ in range(5):
+        # Rola o scroll interno da grade ExtJS para carregar todas as linhas
+        for _ in range(6):
             for f in pagina.frames:
                 try:
                     f.evaluate("let s = document.querySelector('.x-grid3-scroller'); if(s) { s.scrollTop += 500; }")
