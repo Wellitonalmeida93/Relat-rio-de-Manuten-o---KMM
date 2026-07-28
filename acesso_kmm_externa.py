@@ -1,7 +1,9 @@
 from playwright.sync_api import sync_playwright
+from bs4 import BeautifulSoup
 import pandas as pd
 import requests
 import time
+import io
 import os
 
 # Webhook da Nova Planilha de Manutenção Externa
@@ -10,12 +12,10 @@ URL_WEBHOOK = "https://script.google.com/macros/s/AKfycbzhscaxcYlRi5urF2Rtp13Uv4
 def executar_robo_manutencao_externa():
     print("🚀 Iniciando Robô: Relatório de Manutenção Externa...")
     
-    # Credenciais (Pega do GitHub Secrets na nuvem ou usa o padrão localmente)
     usuario = os.environ.get("KMM_USER", "matheusd")
     senha = os.environ.get("KMM_PASS", "328254Ma")
 
     with sync_playwright() as p:
-        # headless=True para execução otimizada
         navegador = p.chromium.launch(headless=True)
         contexto = navegador.new_context()
         pagina = contexto.new_page()
@@ -57,6 +57,8 @@ def executar_robo_manutencao_externa():
                 if select_elem.is_visible(timeout=1000):
                     select_elem.click(force=True)
                     select_elem.select_option(label="--Manutenção Externa--")
+                    select_elem.dispatch_event("change")
+                    select_elem.press("Enter")
                     break
                 else:
                     opcao = frame.get_by_text("--Manutenção Externa--", exact=False).first
@@ -68,13 +70,13 @@ def executar_robo_manutencao_externa():
 
         time.sleep(2)
 
-        print("4. Clicando no botão 'Confirmar' no final da tela...")
+        print("4. Clicando no botão 'Confirmar'...")
         for frame in pagina.frames:
             try:
-                btn_confirmar = frame.get_by_text("Confirmar", exact=False).first
-                if btn_confirmar.is_visible(timeout=1000):
-                    btn_confirmar.scroll_into_view_if_needed()
-                    btn_confirmar.click(force=True)
+                btn = frame.get_by_text("Confirmar", exact=False).first
+                if btn.is_visible(timeout=1000):
+                    btn.scroll_into_view_if_needed()
+                    btn.click(force=True)
                     break
             except:
                 continue
@@ -96,70 +98,90 @@ def executar_robo_manutencao_externa():
 
         time.sleep(2)
 
-        print("7. Capturando a tabela da tela...")
-        linhas_brutas = []
+        print("7. Extraindo tabela de dados do KMM...")
+        dfs_encontrados = []
+        
+        # Estratégia 1: Leitura de tabelas HTML puras
         for frame in pagina.frames:
             try:
-                texto_completo = frame.locator("body").inner_text()
-                if texto_completo and len(texto_completo) > 100:
-                    linhas = texto_completo.split("\n")
-                    for l in linhas:
-                        l_limpa = l.strip()
-                        if l_limpa:
-                            partes = [p.strip() for p in l_limpa.split("\t") if p.strip()]
-                            if not partes:
-                                partes = [l_limpa]
-                            linhas_brutas.append(partes)
+                html_content = frame.content()
+                if "Frota" in html_content or "Placa" in html_content:
+                    tables = pd.read_html(io.StringIO(html_content))
+                    for t in tables:
+                        if len(t) > 0:
+                            dfs_encontrados.append(t)
             except:
                 continue
 
+        # Estratégia 2: Fallback por texto bruto caso não ache tabela HTML
+        if not dfs_encontrados:
+            linhas_brutas = []
+            for frame in pagina.frames:
+                try:
+                    texto_completo = frame.locator("body").inner_text()
+                    if texto_completo and len(texto_completo) > 100:
+                        linhas = texto_completo.split("\n")
+                        for l in linhas:
+                            l_limpa = l.strip()
+                            if l_limpa:
+                                partes = [p.strip() for p in l_limpa.split("\t") if p.strip()]
+                                if not partes:
+                                    partes = [l_limpa]
+                                linhas_brutas.append(partes)
+                except:
+                    continue
+            
+            if linhas_brutas:
+                max_cols = max(len(linha) for linha in linhas_brutas)
+                linhas_padronizadas = [linha + [""] * (max_cols - len(linha)) for linha in linhas_brutas]
+                dfs_encontrados.append(pd.DataFrame(linhas_padronizadas))
+
         navegador.close()
 
-        print("8. Tratando dados e localizando o cabeçalho dinâmico...")
-        if linhas_brutas:
-            max_cols = max(len(linha) for linha in linhas_brutas)
-            linhas_padronizadas = [linha + [""] * (max_cols - len(linha)) for linha in linhas_brutas]
-            
-            df_temp = pd.DataFrame(linhas_padronizadas)
+        print("8. Processando e limpando o relatório...")
+        df_final = None
 
-            # Localiza a linha do cabeçalho
+        for df_temp in dfs_encontrados:
+            # Procura a linha que contém o cabeçalho 'Frota'
             idx_cabecalho = None
             for idx, row in df_temp.iterrows():
-                valores_linha = [str(v).strip().lower() for v in row.values]
-                if "frota" in valores_linha and ("num. os" in valores_linha or "placa" in valores_linha):
+                texto_linha = " ".join([str(v).lower() for v in row.values])
+                if "frota" in texto_linha and ("placa" in texto_linha or "os" in texto_linha or "oficina" in texto_linha):
                     idx_cabecalho = idx
                     break
 
             if idx_cabecalho is not None:
                 # Corta tudo acima do cabeçalho
-                df = df_temp.iloc[idx_cabecalho:].reset_index(drop=True)
-                df.columns = [str(c).strip() for c in df.iloc[0].values]
-                df = df.iloc[1:].reset_index(drop=True)
+                df_certo = df_temp.iloc[idx_cabecalho:].reset_index(drop=True)
+                df_certo.columns = [str(c).strip() for c in df_certo.iloc[0].values]
+                df_certo = df_certo.iloc[1:].reset_index(drop=True)
+                
+                # Remove linhas duplicadas de cabeçalho e vazias
+                df_certo = df_certo[df_certo[df_certo.columns[0]].astype(str).str.lower() != str(df_certo.columns[0]).lower()]
+                df_certo.fillna("", inplace=True)
+                df_certo.dropna(how='all', inplace=True)
+                df_certo.drop_duplicates(inplace=True)
+                df_certo.reset_index(drop=True, inplace=True)
+                
+                df_final = df_certo
+                break
 
-                # Limpeza final
-                df = df[df[df.columns[0]] != df.columns[0]]
-                df.fillna("", inplace=True)
-                df.dropna(how='all', inplace=True)
-                df.drop_duplicates(inplace=True)
-                df.reset_index(drop=True, inplace=True)
+        if df_final is not None and len(df_final) > 0:
+            # Prepara matriz para envio
+            dados_envio = [df_final.columns.tolist()] + df_final.values.tolist()
 
-                # Prepara matriz de dados (Cabeçalho + Linhas) para envio via JSON
-                dados_envio = [df.columns.tolist()] + df.values.tolist()
+            print(f"9. Enviando {len(df_final)} registros para o Google Sheets...")
+            resposta = requests.post(URL_WEBHOOK, json={"dados": dados_envio})
 
-                print(f"9. Enviando {len(df)} registros para o Google Sheets...")
-                resposta = requests.post(URL_WEBHOOK, json={"dados": dados_envio})
-
-                if resposta.status_code == 200 and "Sucesso" in resposta.text:
-                    print("\n==================================================")
-                    print(" ✨ PLANILHA ONLINE ATUALIZADA COM SUCESSO!")
-                    print(f" 📊 Total de registros enviados: {len(df)}")
-                    print("==================================================")
-                else:
-                    print(f"\n[ERRO] Falha ao enviar para o Google Sheets: {resposta.text}")
+            if resposta.status_code == 200 and "Sucesso" in resposta.text:
+                print("\n==================================================")
+                print(" ✨ PLANILHA ONLINE ATUALIZADA COM SUCESSO!")
+                print(f" 📊 Total de registros enviados: {len(df_final)}")
+                print("==================================================")
             else:
-                print("\n[ERRO] Cabeçalho com 'Frota' não foi encontrado na tabela.")
+                print(f"\n[ERRO] Falha ao enviar para o Google Sheets: {resposta.text}")
         else:
-            print("\n[ERRO] Nenhum dado capturado da página.")
+            print("\n[ERRO] Nenhum registro com o cabeçalho 'Frota' foi localizado.")
 
 if __name__ == "__main__":
     executar_robo_manutencao_externa()
