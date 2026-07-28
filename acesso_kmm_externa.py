@@ -4,7 +4,8 @@ import requests
 import time
 import os
 
-URL_WEBHOOK_EXTERNA = "https://script.google.com/macros/s/AKfycbzhscaxcYlRi5urF2Rtp13Uv4T9eKQGWSgk-bSL1di7dtRVGdn-hZRWCMuHULKVGtGOXw/exec"
+# 🔗 URL do Novo Webhook Implantado
+URL_WEBHOOK_EXTERNA = "https://script.google.com/macros/s/AKfycbwUY4i91G2lGbXMua7HyC2LLK4Rkkp5-z4zYCec_NKe9EVHHH1mznGne7uSQP-nOXYJJA/exec"
 
 def executar_robo_manutencao_externa():
     print("🚀 Iniciando Robô 2: Relatório de Manutenção Externa...")
@@ -14,7 +15,8 @@ def executar_robo_manutencao_externa():
 
     with sync_playwright() as p:
         navegador = p.chromium.launch(headless=True)
-        contexto = navegador.new_context()
+        # Resolução Full HD obrigatória para a nuvem
+        contexto = navegador.new_context(viewport={"width": 1920, "height": 1080})
         pagina = contexto.new_page()
 
         print("1. Acessando o KMM e fazendo login...")
@@ -67,7 +69,7 @@ def executar_robo_manutencao_externa():
 
         time.sleep(2)
 
-        print("4. Clicando no botão 'Confirmar'...")
+        print("4. Clicando em 'Confirmar'...")
         for frame in pagina.frames:
             try:
                 btn = frame.get_by_text("Confirmar", exact=False).first
@@ -78,20 +80,10 @@ def executar_robo_manutencao_externa():
             except:
                 continue
 
-        print("5. Aguardando o KMM carregar os dados...")
         pagina.wait_for_load_state("networkidle")
-        time.sleep(8)
+        time.sleep(10)
 
-        # Rolagem para carregar grid ExtJS
-        for _ in range(10):
-            for f in pagina.frames:
-                try:
-                    f.evaluate("let s = document.querySelector('.x-grid3-scroller'); if(s) s.scrollTop += 1000;")
-                except:
-                    pass
-            time.sleep(0.2)
-
-        print("6. Extraindo dados da grade ExtJS do KMM...")
+        print("5. Extraindo dados da grade ExtJS...")
         dados_capturados = None
 
         for frame in pagina.frames:
@@ -99,18 +91,32 @@ def executar_robo_manutencao_externa():
                 res = frame.evaluate('''() => {
                     let hdCells = document.querySelectorAll('.x-grid3-header .x-grid3-hd-inner');
                     let headers = [];
-                    hdCells.forEach(hd => {
-                        let txt = hd.innerText.replace(/\\n/g, ' ').trim();
-                        if (txt) headers.push(txt);
+                    let validIndices = [];
+
+                    hdCells.forEach((hd, idx) => {
+                        let txt = hd.innerText ? hd.innerText.replace(/\\n/g, ' ').trim() : '';
+                        if (txt && !txt.includes('cancelBubble') && !txt.includes('ppmVEICU') && hd.offsetParent !== null) {
+                            headers.push(txt);
+                            validIndices.push(idx);
+                        }
                     });
 
                     let rowElems = document.querySelectorAll('.x-grid3-row');
                     let rows = [];
+
                     rowElems.forEach(row => {
                         let cells = row.querySelectorAll('.x-grid3-cell-inner');
                         let rowData = [];
-                        cells.forEach(c => rowData.push(c.innerText.trim()));
-                        if (rowData.length > 0) rows.push(rowData);
+                        validIndices.forEach(i => {
+                            if (cells[i]) {
+                                rowData.push(cells[i].innerText.trim());
+                            } else {
+                                rowData.push('');
+                            }
+                        });
+                        if (rowData.some(val => val !== '')) {
+                            rows.push(rowData);
+                        }
                     });
 
                     return { headers: headers, rows: rows };
@@ -124,33 +130,30 @@ def executar_robo_manutencao_externa():
 
         navegador.close()
 
-        if dados_capturados:
-            headers = dados_capturados['headers']
-            rows = dados_capturados['rows']
+        # Trava de segurança: lança erro no GitHub Actions se vier zerado
+        if not dados_capturados:
+            raise RuntimeError("❌ [ERRO CRÍTICO] Nenhuma linha foi encontrada na tabela do KMM. Verifique se a busca carregou dados na tela!")
 
-            max_cols = max(len(r) for r in rows)
-            rows_padronizadas = [r + [""] * (max_cols - len(r)) for r in rows]
+        headers = dados_capturados['headers']
+        rows = dados_capturados['rows']
 
-            df = pd.DataFrame(rows_padronizadas)
-            if len(headers) == max_cols:
-                df.columns = headers
-            else:
-                df.columns = [f"Col_{i}" for i in range(max_cols)]
+        df = pd.DataFrame(rows, columns=headers if len(headers) == len(rows[0]) else None)
+        if df.columns.tolist() == list(range(len(df.columns))):
+            df.columns = [f"Col_{i}" for i in range(len(df.columns))]
 
-            df.fillna("", inplace=True)
-            df.drop_duplicates(inplace=True)
+        df.fillna("", inplace=True)
+        df.drop_duplicates(inplace=True)
 
-            dados_envio = [df.columns.tolist()] + df.values.tolist()
+        dados_envio = [df.columns.tolist()] + df.values.tolist()
 
-            print(f"7. Enviando {len(df)} registros para a Planilha Externa...")
-            resposta = requests.post(URL_WEBHOOK_EXTERNA, json={"dados": dados_envio})
+        print(f"6. Enviando {len(df)} registros para a Planilha Externa...")
+        resposta = requests.post(URL_WEBHOOK_EXTERNA, json={"dados": dados_envio})
 
-            if resposta.status_code == 200 and "Sucesso" in resposta.text:
-                print(" ✨ PLANILHA 2 ATUALIZADA COM SUCESSO!")
-            else:
-                print(f"[ERRO Webhook]: {resposta.text}")
-        else:
-            print("[ERRO] Nenhuma linha foi extraída do KMM.")
+        # Trava de segurança: lança erro no GitHub Actions se o Sheets rejeitar
+        if resposta.status_code != 200 or "Sucesso" not in resposta.text:
+            raise RuntimeError(f"❌ [ERRO GOOGLE SHEETS] Falha no Webhook: Código {resposta.status_code} - Resposta: {resposta.text}")
+
+        print(" ✨ PLANILHA ATUALIZADA COM SUCESSO NO GOOGLE SHEETS!")
 
 if __name__ == "__main__":
     executar_robo_manutencao_externa()
