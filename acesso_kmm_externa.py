@@ -4,6 +4,7 @@ import requests
 import time
 import os
 
+# 🔗 URL do Webhook da Planilha Externa
 URL_WEBHOOK_EXTERNA = "https://script.google.com/macros/s/AKfycbwUY4i91G2lGbXMua7HyC2LLK4Rkkp5-z4zYCec_NKe9EVHHH1mznGne7uSQP-nOXYJJA/exec"
 
 def executar_robo_manutencao_externa():
@@ -14,7 +15,6 @@ def executar_robo_manutencao_externa():
 
     with sync_playwright() as p:
         navegador = p.chromium.launch(headless=True)
-        # Resolução Full HD obrigatória para evitar que o ExtJS oculte colunas
         contexto = navegador.new_context(viewport={"width": 1920, "height": 1080})
         pagina = contexto.new_page()
 
@@ -52,57 +52,37 @@ def executar_robo_manutencao_externa():
         pagina.wait_for_load_state("networkidle")
         time.sleep(4)
 
-        print("3. Selecionando '--Manutenção Externa--'...")
+        print("3. Selecionando '--Manutenção Externa--' na caixa de Filial...")
         selecionado = False
 
+        # Injeta JS em todos os frames para alterar o <select> da Filial
         for frame in pagina.frames:
-            # Estratégia 1: Clica na seta do gatilho ExtJS (.x-form-arrow-trigger) e escolhe o item da lista
             try:
-                triggers = frame.locator(".x-form-arrow-trigger").all()
-                for trig in triggers:
-                    if trig.is_visible():
-                        trig.click(force=True)
-                        time.sleep(0.5)
-                        
-                        # Busca o item na lista suspensa do ExtJS
-                        item = frame.get_by_text("--Manutenção Externa--", exact=False).first
-                        if item.is_visible():
-                            item.click(force=True)
-                            selecionado = True
-                            print("   -> Filtro selecionado via gatilho ExtJS!")
-                            break
-            except:
-                pass
+                opcao_selecionada = frame.evaluate('''() => {
+                    let selects = document.querySelectorAll('select');
+                    for (let sel of selects) {
+                        for (let i = 0; i < sel.options.length; i++) {
+                            let txt = sel.options[i].text.toUpperCase();
+                            if (txt.includes('MANUTENÇÃO EXTERNA') || txt.includes('MANUTENCAO EXTERNA') || txt.includes('EXTERNA')) {
+                                sel.selectedIndex = i;
+                                sel.dispatchEvent(new Event('change', { bubbles: true }));
+                                sel.dispatchEvent(new Event('blur', { bubbles: true }));
+                                return sel.options[i].text;
+                            }
+                        }
+                    }
+                    return null;
+                }''')
 
-            if selecionado:
-                break
-
-            # Estratégia 2: Se for um select HTML comum
-            try:
-                select_elem = frame.locator("select").first
-                if select_elem.is_visible():
-                    select_elem.select_option(label="--Manutenção Externa--")
-                    select_elem.dispatch_event("change")
+                if opcao_selecionada:
+                    print(f"   -> Sucesso! Opção selecionada no DOM: '{opcao_selecionada}'")
                     selecionado = True
-                    print("   -> Filtro selecionado via HTML <select>!")
                     break
             except:
-                pass
+                continue
 
-            # Estratégia 3: Escreve direto no campo de texto da caixa de combinação
-            try:
-                inputs = frame.locator("input.x-form-text").all()
-                for inp in inputs:
-                    if inp.is_visible():
-                        inp.click(force=True)
-                        inp.fill("--Manutenção Externa--")
-                        inp.press("Enter")
-                        inp.press("Tab")
-                        selecionado = True
-                        print("   -> Filtro selecionado via Input de Texto!")
-                        break
-            except:
-                pass
+        if not selecionado:
+            print("   [AVISO] Não foi possível encontrar a caixa <select> via JS nativo. Tentando fallback...")
 
         time.sleep(2)
 
@@ -110,21 +90,34 @@ def executar_robo_manutencao_externa():
         confirmado = False
         for frame in pagina.frames:
             try:
-                btn = frame.get_by_text("Confirmar", exact=False).first
-                if btn.is_visible(timeout=1000):
-                    btn.scroll_into_view_if_needed()
-                    btn.click(force=True)
+                res = frame.evaluate('''() => {
+                    let btns = document.querySelectorAll('button, input[type="button"], input[type="submit"], a, span, div, td');
+                    for (let b of btns) {
+                        if (b.innerText && b.innerText.trim().toUpperCase() === 'CONFIRMAR') {
+                            b.click();
+                            return true;
+                        }
+                    }
+                    return false;
+                }''')
+                if res:
                     confirmado = True
-                    print("   -> Botão 'Confirmar' clicado!")
+                    print("   -> Botão 'Confirmar' clicado com sucesso via DOM!")
                     break
             except:
                 continue
 
+        if not confirmado:
+            try:
+                pagina.get_by_text("Confirmar", exact=False).first.click(force=True)
+            except:
+                pass
+
         print("5. Aguardando a busca e renderização dos dados...")
         pagina.wait_for_load_state("networkidle")
-        time.sleep(10)
+        time.sleep(12)
 
-        # Rola o scroll interno da grade ExtJS
+        # Rola o scroll interno da grade ExtJS para forçar carregamento
         for _ in range(5):
             for f in pagina.frames:
                 try:
@@ -178,23 +171,10 @@ def executar_robo_manutencao_externa():
             except:
                 continue
 
-        # 🔍 DIAGNÓSTICO CASO NÃO ENCONTRE DADOS
-        if not dados_capturados:
-            print("\n--------------------------------------------------")
-            print("🔍 CONTEÚDO CAPTURADO DA TELA (DIAGNÓSTICO):")
-            for idx, f in enumerate(pagina.frames):
-                try:
-                    txt = f.locator("body").inner_text()
-                    if txt and len(txt.strip()) > 0:
-                        print(f"\n[Frame {idx}]:\n{txt[:600]}...")
-                except:
-                    pass
-            print("--------------------------------------------------\n")
-
         navegador.close()
 
         if not dados_capturados:
-            raise RuntimeError("❌ [ERRO CRÍTICO] Nenhuma linha foi encontrada na tabela do KMM. Veja o diagnóstico impresso acima!")
+            raise RuntimeError("❌ [ERRO CRÍTICO] Nenhuma linha foi encontrada na tabela do KMM. Verifique se existem registros de Manutenção Externa abertos no momento!")
 
         headers = dados_capturados['headers']
         rows = dados_capturados['rows']
