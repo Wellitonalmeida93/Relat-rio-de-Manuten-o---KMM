@@ -1,27 +1,30 @@
 from playwright.sync_api import sync_playwright
+from bs4 import BeautifulSoup
 import pandas as pd
 import requests
 import time
-import re
+import io
+import os
 
-# URL do seu Google Apps Script recém-criado
-URL_WEBHOOK = "https://script.google.com/macros/s/AKfycbwKqEiDDc7GiH8Knp5fURUDzDW7Itpw6Ivw7fLAXcVlLJjfo_NMZKLmEHdB3HbHysBr/exec"
+# ⚠️ COLE AQUI A URL DO WEBHOOK DA SUA PRIMEIRA PLANILHA (Relatório Principal)
+URL_WEBHOOK_PRINCIPAL = "SUA_URL_WEBHOOK_AQUI"
 
-def capturar_e_enviar_google_sheets():
-    print("🚀 Iniciando automação KMM na nuvem (Modo Invisível)...")
+def executar_robo_principal():
+    print("🚀 Iniciando Robô Principal: Painel de Manutenção KMM...")
     
+    usuario = os.environ.get("KMM_USER", "matheusd")
+    senha = os.environ.get("KMM_PASS", "328254Ma")
+
     with sync_playwright() as p:
         navegador = p.chromium.launch(headless=True)
         contexto = navegador.new_context()
         pagina = contexto.new_page()
 
-        print("1. Acessando o portal KMM...")
+        print("1. Acessando o KMM e efetuando login...")
         pagina.goto("https://kmm.pizzattolog.com.br/index.cfm")
-
-        print("2. Preenchendo credenciais...")
-        pagina.locator("input[type='text']").first.fill("matheusd")
+        pagina.locator("input[type='text']").first.fill(usuario)
         campo_senha = pagina.locator("input[type='password']").first
-        campo_senha.fill("328254Ma")
+        campo_senha.fill(senha)
         campo_senha.press("Enter")
 
         pagina.wait_for_load_state("networkidle")
@@ -38,156 +41,117 @@ def capturar_e_enviar_google_sheets():
                     continue
             pagina.get_by_text(texto, exact=False).first.click(force=True)
 
-        print("3. Navegando nos menus até o MANUT35...")
+        print("2. Navegando até 'Painel de Manutenção'...")
         clicar_menu("Manutenção de Veículos")
         pagina.wait_for_load_state("networkidle")
         time.sleep(2)
 
-        clicar_menu("Relatórios")
+        # Clica no Painel principal (Ajuste o nome se no seu sistema for 'Relatórios' ou outro menu)
+        clicar_menu("Painel de Manutenção") 
         pagina.wait_for_load_state("networkidle")
-        time.sleep(2)
+        time.sleep(8) # Aguarda carregar o painel inteiro
 
-        clicar_menu("Relatório de Tabelas de Manutenção nos Equipamentos (MANUT35)")
-        pagina.wait_for_load_state("networkidle")
-        time.sleep(4)
-
-        print("4. Clicando em 'Confirmar'...")
+        print("3. Extraindo tabela de dados do KMM...")
+        dfs_encontrados = []
+        
         for frame in pagina.frames:
             try:
-                btn = frame.get_by_text("Confirmar", exact=False).first
-                if btn.is_visible(timeout=1000):
-                    btn.click(force=True)
-                    break
+                html_content = frame.content()
+                if "Frota" in html_content or "Placa" in html_content:
+                    tables = pd.read_html(io.StringIO(html_content))
+                    for t in tables:
+                        if len(t) > 0:
+                            dfs_encontrados.append(t)
             except:
-                continue
-
-        print("5. Aguardando processamento dos dados...")
-        pagina.wait_for_load_state("networkidle")
-        time.sleep(10)
-
-        print("6. Coletando e carregando todos os registros...")
-        for _ in range(25):
-            pagina.keyboard.press("PageDown")
-            time.sleep(0.15)
-            for f in pagina.frames:
-                try:
-                    f.evaluate("window.scrollBy(0, 1000);")
-                    f.evaluate("let s = document.querySelector('.x-grid3-scroller'); if(s) s.scrollTop += 1000;")
-                except:
-                    pass
-
-        time.sleep(2)
-
-        print("7. Extraindo texto da tela...")
-        linhas_brutas = []
-
-        for frame in pagina.frames:
-            try:
-                texto_completo = frame.locator("body").inner_text()
-                if texto_completo and "Frota" in texto_completo:
-                    linhas = texto_completo.split("\n")
-                    for l in linhas:
-                        l_limpa = l.strip()
-                        if l_limpa:
-                            partes = [p.strip() for p in l_limpa.split("\t") if p.strip()]
-                            if not partes:
-                                partes = [l_limpa]
-                            linhas_brutas.append(partes)
-            except Exception:
                 continue
 
         navegador.close()
 
-        print("8. Aplicando tratamento de filtros e formatando para o Google Sheets...")
-        if linhas_brutas:
-            max_cols = max(len(linha) for linha in linhas_brutas)
-            colunas_temp = [f"Coluna_{i+1}" for i in range(max_cols)]
-            linhas_padronizadas = [linha + [""] * (max_cols - len(linha)) for linha in linhas_brutas]
+        print("4. Processando os dados e aplicando regras de negócio...")
+        df_final = None
 
-            df = pd.DataFrame(linhas_padronizadas, columns=colunas_temp)
-
-            # Localiza a linha inicial do cabeçalho 'Frota'
+        for df_temp in dfs_encontrados:
             idx_cabecalho = None
-            for idx, row in df.iterrows():
-                if str(row.iloc[0]).strip().lower() == "frota":
+            for idx, row in df_temp.iterrows():
+                texto_linha = " ".join([str(v).lower() for v in row.values])
+                # Procura colunas vitais do painel principal
+                if "frota" in texto_linha and ("dia" in texto_linha or "km" in texto_linha):
                     idx_cabecalho = idx
                     break
 
             if idx_cabecalho is not None:
-                novas_colunas = df.iloc[idx_cabecalho].values
-                df_limpo = df.iloc[idx_cabecalho + 1:].copy()
-                df_limpo.columns = novas_colunas
-                df_limpo.reset_index(drop=True, inplace=True)
-                df_limpo = df_limpo.dropna(how='all').drop_duplicates()
-                df_final = df_limpo
-            else:
-                df_final = df.iloc[15:].reset_index(drop=True)
+                df_certo = df_temp.iloc[idx_cabecalho:].reset_index(drop=True)
+                df_certo.columns = [str(c).strip() for c in df_certo.iloc[0].values]
+                df_certo = df_certo.iloc[1:].reset_index(drop=True)
+                
+                df_certo = df_certo[df_certo[df_certo.columns[0]].astype(str).str.lower() != str(df_certo.columns[0]).lower()]
+                df_certo.fillna("", inplace=True)
+                df_certo.dropna(how='all', inplace=True)
+                df_certo.drop_duplicates(inplace=True)
+                df_certo.reset_index(drop=True, inplace=True)
+                
+                df_final = df_certo
+                break
 
-            # Identifica colunas do relatório
-            coluna_status = None
-            coluna_km = None
-            coluna_dias = None
+        if df_final is not None and len(df_final) > 0:
+            
+            # ---------------------------------------------------------
+            # 🧠 MOTOR DE REGRAS DE NEGÓCIO (VENCIDAS / À VENCER)
+            # ---------------------------------------------------------
+            col_dias = next((c for c in df_final.columns if 'dia' in c.lower()), None)
+            col_km = next((c for c in df_final.columns if 'km' in c.lower()), None)
+            col_tabela = next((c for c in df_final.columns if 'tabela' in c.lower() or 'plano' in c.lower()), None)
 
-            for col in df_final.columns:
-                col_str = str(col).lower().replace("ç", "c").replace("ã", "a")
-                if "status" in col_str:
-                    coluna_status = col
-                elif "km" in col_str:
-                    if not coluna_km:
-                        coluna_km = col
-                elif "dias" in col_str or "dia" in col_str:
-                    if not coluna_dias:
-                        coluna_dias = col
+            dados_vencidas = [df_final.columns.tolist()]
+            dados_a_vencer = [df_final.columns.tolist()]
 
-            dados_payload = {}
+            for _, row in df_final.iterrows():
+                try:
+                    dias = int(float(row[col_dias])) if col_dias and str(row[col_dias]).strip() else 9999
+                except:
+                    dias = 9999
 
-            if coluna_status:
-                for status_val, df_grupo in df_final.groupby(coluna_status):
-                    status_nome = str(status_val).strip()
-                    status_lower = status_nome.lower()
+                try:
+                    km = int(float(row[col_km])) if col_km and str(row[col_km]).strip() else 999999
+                except:
+                    km = 999999
+                
+                tabela_plano = str(row[col_tabela]).upper() if col_tabela else ""
+                
+                # Regra 1: Vencidas (Passou do prazo)
+                if dias < 0 or km < 0:
+                    dados_vencidas.append(row.tolist())
+                    continue
+                
+                # Regra 2: À Vencer
+                # 🚨 EXCEÇÃO: Carreta Baú 60k -> Avalia SÓ DIAS
+                if "TABELA BASICA RODANTE SEMI REBOQUE BAU - 60.000 KM" in tabela_plano:
+                    if 0 <= dias <= 15:
+                        dados_a_vencer.append(row.tolist())
+                # 🚗 REGRA GERAL: Avalia DIAS ou KM
+                else:
+                    if (0 <= dias <= 15) or (0 <= km <= 1000):
+                        dados_a_vencer.append(row.tolist())
 
-                    # Descarta abas 'Ok' e vazias
-                    if status_lower in ["ok", "nan", ""]:
-                        continue
+            # ---------------------------------------------------------
+            
+            print(f"5. Enviando dados para o Google Sheets (Vencidas: {len(dados_vencidas)-1} | À Vencer: {len(dados_a_vencer)-1})")
+            
+            payload = {
+                "vencidas": dados_vencidas,
+                "a_vencer": dados_a_vencer
+            }
+            
+            resposta = requests.post(URL_WEBHOOK_PRINCIPAL, json=payload)
 
-                    df_sub = df_grupo.copy()
-
-                    # Filtros específicos para a aba 'À vencer'
-                    if "vencer" in status_lower and "vencida" not in status_lower:
-                        cond_km = pd.Series(True, index=df_sub.index)
-                        cond_dias = pd.Series(True, index=df_sub.index)
-
-                        if coluna_km:
-                            is_nao_controlada_km = df_sub[coluna_km].astype(str).str.lower().str.contains("nao controlada|não controlada")
-                            s_km = df_sub[coluna_km].astype(str).str.replace(r'[^\d,-]', '', regex=True).str.replace(',', '.')
-                            km_num = pd.to_numeric(s_km, errors='coerce')
-                            cond_km = (km_num <= 5000) | is_nao_controlada_km
-
-                        if coluna_dias:
-                            is_nao_controlada_dias = df_sub[coluna_dias].astype(str).str.lower().str.contains("nao controlada|não controlada")
-                            s_dias = df_sub[coluna_dias].astype(str).str.replace(r'[^\d,-]', '', regex=True).str.replace(',', '.')
-                            dias_num = pd.to_numeric(s_dias, errors='coerce')
-                            cond_dias = (dias_num <= 15) | is_nao_controlada_dias
-
-                        df_sub = df_sub[cond_km & cond_dias]
-
-                    if not df_sub.empty:
-                        nome_aba = re.sub(r'[\:\*\[\]\?\\\/]', '', status_nome)[:30]
-                        # Converte DataFrame para matriz (lista de listas incluindo cabeçalho)
-                        matriz = [df_sub.columns.tolist()] + df_sub.values.tolist()
-                        dados_payload[nome_aba] = matriz
-
-            # Enviando para a planilha online no Google Sheets
-            if dados_payload:
-                print("🌐 Transmitindo os dados para o Google Sheets...")
-                resposta = requests.post(URL_WEBHOOK, json=dados_payload)
-                print("   -> Resposta do servidor:", resposta.text)
+            if resposta.status_code == 200 and "Sucesso" in resposta.text:
                 print("\n==================================================")
-                print(" ✨ PLANILHA ONLINE ATUALIZADA COM SUCESSO!")
+                print(" ✨ PLANILHA PRINCIPAL ATUALIZADA COM SUCESSO!")
                 print("==================================================")
             else:
-                print("\n[AVISO] Nenhum registro atendeu aos critérios dos filtros.")
+                print(f"\n[ERRO] Falha ao enviar para o Google Sheets: {resposta.text}")
         else:
-            print("\n[ERRO] Nenhum dado foi capturado.")
+            print("\n[ERRO] Cabeçalho com 'Frota' e 'Dias' não foi localizado.")
 
-capturar_e_enviar_google_sheets()
+if __name__ == "__main__":
+    executar_robo_principal()
