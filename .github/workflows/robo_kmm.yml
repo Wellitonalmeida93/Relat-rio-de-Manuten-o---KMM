@@ -31,6 +31,9 @@ jobs:
           KMM_PASS: ${{ secrets.KMM_PASS }}
         run: python acesso_kmm.py
 
+      - name: Pausa de 15s para deslogar e liberar o KMM
+        run: sleep 15
+
       - name: Executar Robô 2 - Manutenção Externa
         env:
           KMM_USER: ${{ secrets.KMM_USER }}
