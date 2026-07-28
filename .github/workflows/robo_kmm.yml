@@ -1,10 +1,10 @@
-name: Executar Robo KMM e Atualizar Google Sheets
+name: Executar Robos KMM e Atualizar Google Sheets
 
 on:
   schedule:
     # Roda a cada 3 horas automaticamente
     - cron: '0 */3 * * *'
-  workflow_dispatch: # Permite acionar manualmente no painel do GitHub se quiser
+  workflow_dispatch: # Permite acionar manualmente no GitHub
 
 jobs:
   executar:
@@ -25,5 +25,14 @@ jobs:
           pip install playwright pandas openpyxl requests
           playwright install --with-deps chromium
 
-      - name: Executar o Robô KMM
+      - name: Executar Robô 1 - Relatório de Manutenção
+        env:
+          KMM_USER: ${{ secrets.KMM_USER }}
+          KMM_PASS: ${{ secrets.KMM_PASS }}
         run: python acesso_kmm.py
+
+      - name: Executar Robô 2 - Manutenção Externa
+        env:
+          KMM_USER: ${{ secrets.KMM_USER }}
+          KMM_PASS: ${{ secrets.KMM_PASS }}
+        run: python acesso_kmm_externa.py
