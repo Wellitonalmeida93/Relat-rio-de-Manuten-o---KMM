@@ -4,7 +4,7 @@ on:
   schedule:
     # Roda a cada 3 horas automaticamente
     - cron: '0 */3 * * *'
-  workflow_dispatch: # Permite acionar manualmente no painel do GitHub se quiser
+  workflow_dispatch: # Permite acionar manualmente clicando em "Run workflow"
 
 jobs:
   executar:
@@ -26,4 +26,8 @@ jobs:
           playwright install --with-deps chromium
 
       - name: Executar o Robô KMM
+        # Passa as variáveis secretas salvas no GitHub para dentro do script Python
+        env:
+          KMM_USER: ${{ secrets.KMM_USER }}
+          KMM_PASS: ${{ secrets.KMM_PASS }}
         run: python acesso_kmm.py
