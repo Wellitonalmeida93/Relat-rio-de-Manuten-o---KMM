@@ -5,14 +5,12 @@ import time
 import os
 import re
 
-# Webhook do Relatório Principal
 URL_WEBHOOK_PRINCIPAL = "https://script.google.com/macros/s/AKfycbwYy133M99sXk_d1yIsH68eIAnw-a4MUnCsk0YvN33h_lP6kX8-H-3y_l0wP_R3Z08m/exec"
 
 def extrair_numero(valor):
     """Extrai apenas o número (positivo ou negativo) de um texto."""
-    if not valor:
+    if not valor or str(valor).strip().upper() in ["NÃO CONTROLADA", "NAO CONTROLADA", "NAN", ""]:
         return 999999
-    # Remove pontos de milhar (ex: 1.200 -> 1200) e limpa espaços
     val_limpo = str(valor).replace('.', '').strip()
     match = re.search(r'(-?\d+)', val_limpo)
     if match:
@@ -27,7 +25,8 @@ def executar_robo_principal():
 
     with sync_playwright() as p:
         navegador = p.chromium.launch(headless=True)
-        contexto = navegador.new_context()
+        # Resolução Full HD obrigatória para a nuvem
+        contexto = navegador.new_context(viewport={"width": 1920, "height": 1080})
         pagina = contexto.new_page()
 
         print("1. Acessando o KMM e fazendo login...")
@@ -51,7 +50,7 @@ def executar_robo_principal():
                     continue
             pagina.get_by_text(texto, exact=False).first.click(force=True)
 
-        print("2. Navegando até o relatório...")
+        print("2. Navegando até 'Painel de Manutenção'...")
         clicar_menu("Manutenção de Veículos")
         pagina.wait_for_load_state("networkidle")
         time.sleep(2)
@@ -60,7 +59,7 @@ def executar_robo_principal():
         pagina.wait_for_load_state("networkidle")
         time.sleep(8)
 
-        print("3. Extraindo dados da grade ExtJS do KMM...")
+        print("3. Extraindo colunas visíveis da grade ExtJS...")
         dados_capturados = None
 
         for frame in pagina.frames:
@@ -68,18 +67,32 @@ def executar_robo_principal():
                 res = frame.evaluate('''() => {
                     let hdCells = document.querySelectorAll('.x-grid3-header .x-grid3-hd-inner');
                     let headers = [];
-                    hdCells.forEach(hd => {
-                        let txt = hd.innerText.replace(/\\n/g, ' ').strip ? hd.innerText.replace(/\\n/g, ' ').strip() : hd.innerText.trim();
-                        if (txt) headers.push(txt);
+                    let validIndices = [];
+
+                    hdCells.forEach((hd, idx) => {
+                        let txt = hd.innerText ? hd.innerText.replace(/\\n/g, ' ').trim() : '';
+                        if (txt && !txt.includes('cancelBubble') && !txt.includes('ppmVEICU') && hd.offsetParent !== null) {
+                            headers.push(txt);
+                            validIndices.push(idx);
+                        }
                     });
 
                     let rowElems = document.querySelectorAll('.x-grid3-row');
                     let rows = [];
+
                     rowElems.forEach(row => {
                         let cells = row.querySelectorAll('.x-grid3-cell-inner');
                         let rowData = [];
-                        cells.forEach(c => rowData.push(c.innerText.trim()));
-                        if (rowData.length > 0) rows.push(rowData);
+                        validIndices.forEach(i => {
+                            if (cells[i]) {
+                                rowData.push(cells[i].innerText.trim());
+                            } else {
+                                rowData.push('');
+                            }
+                        });
+                        if (rowData.some(val => val !== '')) {
+                            rows.push(rowData);
+                        }
                     });
 
                     return { headers: headers, rows: rows };
@@ -97,20 +110,13 @@ def executar_robo_principal():
             headers = dados_capturados['headers']
             rows = dados_capturados['rows']
 
-            # Padroniza número de colunas
-            max_cols = max(len(r) for r in rows)
-            rows_padronizadas = [r + [""] * (max_cols - len(r)) for r in rows]
-            
-            df = pd.DataFrame(rows_padronizadas)
-            
-            if len(headers) == max_cols:
-                df.columns = headers
-            else:
-                df.columns = [f"Col_{i}" for i in range(max_cols)]
+            df = pd.DataFrame(rows, columns=headers if len(headers) == len(rows[0]) else None)
+            if df.columns.tolist() == list(range(len(df.columns))):
+                df.columns = [f"Col_{i}" for i in range(len(df.columns))]
 
-            print(f"   -> Encontrados {len(df)} registros na tela!")
+            print(f"   -> Encontrados {len(df)} registros com alinhamento correto!")
 
-            # Identifica colunas chaves pelos nomes
+            # Identifica as colunas chaves
             col_dias = next((c for c in df.columns if 'dia' in str(c).lower()), None)
             col_km = next((c for c in df.columns if 'km' in str(c).lower() or 'hor' in str(c).lower()), None)
             col_tabela = next((c for c in df.columns if any(p in str(c).lower() for p in ['tabela', 'plano', 'equipamento'])), None)
@@ -123,17 +129,17 @@ def executar_robo_principal():
                 val_km = extrair_numero(row[col_km]) if col_km else 999999
                 tabela_plano = str(row[col_tabela]).upper() if col_tabela else ""
 
-                # 1. Regra de Vencidas
+                # 1. Regra de Vencidas (Qualquer valor negativo)
                 if val_dias < 0 or val_km < 0:
                     dados_vencidas.append(row.tolist())
                     continue
 
                 # 2. Regra de À Vencer
-                # Exceção: Semi Reboque Baú 60k -> Avalia APENAS DIAS
+                # 🚨 EXCEÇÃO: Carreta Baú 60k -> Avalia APENAS DIAS
                 if "SEMI REBOQUE BAU - 60.000 KM" in tabela_plano or "BAU - 60.000" in tabela_plano:
                     if 0 <= val_dias <= 15:
                         dados_a_vencer.append(row.tolist())
-                # Demais veículos: Avalia DIAS ou KM
+                # DEMAIS VEÍCULOS: Avalia DIAS (0 a 15) OU KM (0 a 1000)
                 else:
                     if (0 <= val_dias <= 15) or (0 <= val_km <= 1000):
                         dados_a_vencer.append(row.tolist())
@@ -147,7 +153,7 @@ def executar_robo_principal():
 
             resposta = requests.post(URL_WEBHOOK_PRINCIPAL, json=payload)
             if resposta.status_code == 200 and "Sucesso" in resposta.text:
-                print(" ✨ PLANILHA 1 ATUALIZADA COM SUCESSO!")
+                print(" ✨ PLANILHA PRINCIPAL ATUALIZADA COM SUCESSO!")
             else:
                 print(f"[ERRO Webhook]: {resposta.text}")
         else:
