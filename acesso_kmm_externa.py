@@ -4,7 +4,6 @@ import requests
 import time
 import os
 
-# 🔗 URL do Webhook da Planilha Externa
 URL_WEBHOOK_EXTERNA = "https://script.google.com/macros/s/AKfycbwUY4i91G2lGbXMua7HyC2LLK4Rkkp5-z4zYCec_NKe9EVHHH1mznGne7uSQP-nOXYJJA/exec"
 
 def executar_robo_manutencao_externa():
@@ -15,7 +14,7 @@ def executar_robo_manutencao_externa():
 
     with sync_playwright() as p:
         navegador = p.chromium.launch(headless=True)
-        # Força resolução Full HD para renderizar o ExtJS sem esconder elementos
+        # Resolução Full HD obrigatória para evitar que o ExtJS oculte colunas
         contexto = navegador.new_context(viewport={"width": 1920, "height": 1080})
         pagina = contexto.new_page()
 
@@ -55,45 +54,57 @@ def executar_robo_manutencao_externa():
 
         print("3. Selecionando '--Manutenção Externa--'...")
         selecionado = False
+
         for frame in pagina.frames:
-            # Estratégia A: Select HTML nativo
+            # Estratégia 1: Clica na seta do gatilho ExtJS (.x-form-arrow-trigger) e escolhe o item da lista
+            try:
+                triggers = frame.locator(".x-form-arrow-trigger").all()
+                for trig in triggers:
+                    if trig.is_visible():
+                        trig.click(force=True)
+                        time.sleep(0.5)
+                        
+                        # Busca o item na lista suspensa do ExtJS
+                        item = frame.get_by_text("--Manutenção Externa--", exact=False).first
+                        if item.is_visible():
+                            item.click(force=True)
+                            selecionado = True
+                            print("   -> Filtro selecionado via gatilho ExtJS!")
+                            break
+            except:
+                pass
+
+            if selecionado:
+                break
+
+            # Estratégia 2: Se for um select HTML comum
             try:
                 select_elem = frame.locator("select").first
-                if select_elem.is_visible(timeout=1000):
+                if select_elem.is_visible():
                     select_elem.select_option(label="--Manutenção Externa--")
                     select_elem.dispatch_event("change")
                     selecionado = True
+                    print("   -> Filtro selecionado via HTML <select>!")
                     break
             except:
                 pass
-            
-            # Estratégia B: Combo ExtJS por preenchimento e Enter
+
+            # Estratégia 3: Escreve direto no campo de texto da caixa de combinação
             try:
-                inputs = frame.locator("input").all()
+                inputs = frame.locator("input.x-form-text").all()
                 for inp in inputs:
-                    if inp.is_visible(timeout=500):
+                    if inp.is_visible():
                         inp.click(force=True)
                         inp.fill("--Manutenção Externa--")
                         inp.press("Enter")
                         inp.press("Tab")
                         selecionado = True
+                        print("   -> Filtro selecionado via Input de Texto!")
                         break
-                if selecionado:
-                    break
             except:
                 pass
 
-            # Estratégia C: Clique no texto da opção
-            try:
-                opcao = frame.get_by_text("--Manutenção Externa--", exact=False).first
-                if opcao.is_visible(timeout=1000):
-                    opcao.click(force=True)
-                    selecionado = True
-                    break
-            except:
-                pass
-
-        time.sleep(3)
+        time.sleep(2)
 
         print("4. Clicando no botão 'Confirmar'...")
         confirmado = False
@@ -104,28 +115,23 @@ def executar_robo_manutencao_externa():
                     btn.scroll_into_view_if_needed()
                     btn.click(force=True)
                     confirmado = True
+                    print("   -> Botão 'Confirmar' clicado!")
                     break
             except:
                 continue
 
-        if not confirmado:
-            try:
-                pagina.get_by_text("Confirmar", exact=False).first.click(force=True)
-            except:
-                pass
-
         print("5. Aguardando a busca e renderização dos dados...")
         pagina.wait_for_load_state("networkidle")
-        time.sleep(12)
+        time.sleep(10)
 
-        # Rola o scroll da grade ExtJS para forçar o carregamento do DOM
+        # Rola o scroll interno da grade ExtJS
         for _ in range(5):
             for f in pagina.frames:
                 try:
                     f.evaluate("let s = document.querySelector('.x-grid3-scroller'); if(s) { s.scrollTop += 500; }")
                 except:
                     pass
-            time.sleep(0.5)
+            time.sleep(0.3)
 
         print("6. Extraindo dados da grade ExtJS...")
         dados_capturados = None
@@ -172,10 +178,23 @@ def executar_robo_manutencao_externa():
             except:
                 continue
 
+        # 🔍 DIAGNÓSTICO CASO NÃO ENCONTRE DADOS
+        if not dados_capturados:
+            print("\n--------------------------------------------------")
+            print("🔍 CONTEÚDO CAPTURADO DA TELA (DIAGNÓSTICO):")
+            for idx, f in enumerate(pagina.frames):
+                try:
+                    txt = f.locator("body").inner_text()
+                    if txt and len(txt.strip()) > 0:
+                        print(f"\n[Frame {idx}]:\n{txt[:600]}...")
+                except:
+                    pass
+            print("--------------------------------------------------\n")
+
         navegador.close()
 
         if not dados_capturados:
-            raise RuntimeError("❌ [ERRO CRÍTICO] Nenhuma linha foi encontrada na tabela do KMM. Verifique se a opção '--Manutenção Externa--' foi selecionada corretamente e se existem dados para o filtro!")
+            raise RuntimeError("❌ [ERRO CRÍTICO] Nenhuma linha foi encontrada na tabela do KMM. Veja o diagnóstico impresso acima!")
 
         headers = dados_capturados['headers']
         rows = dados_capturados['rows']
