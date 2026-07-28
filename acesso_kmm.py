@@ -17,6 +17,40 @@ def extrair_numero(valor):
         return int(match.group(1))
     return 999999
 
+# ==============================================================================
+# 🧩 REGRAS DE NEGÓCIO ISOLADAS
+# ==============================================================================
+
+def verificar_vencida(val_dias, val_km):
+    """
+    1️⃣ ABA VENCIDA (Sem filtro especial):
+    Qualquer indicador negativo envia o veículo para Vencidas.
+    """
+    return val_dias < 0 or val_km < 0
+
+
+def verificar_a_vencer(val_dias, val_km, tabela_plano):
+    """
+    2️⃣ ABA A VENCER (Dois Filtros Isolados):
+    """
+    NOME_EXCECAO = "TABELA BASICA RODANTE SEMI REBOQUE BAU - 60.000 KM"
+    
+    # --------------------------------------------------------------------------
+    # FILTRO B: Exceção Semi Reboque Baú 60k (Avalia APENAS Dias)
+    # --------------------------------------------------------------------------
+    if NOME_EXCECAO in tabela_plano:
+        return 0 <= val_dias <= 15
+
+    # --------------------------------------------------------------------------
+    # FILTRO A: Regra Geral (Dias entre 0 e 15 OU KM entre 0 e 5.000)
+    # --------------------------------------------------------------------------
+    dias_no_prazo = (0 <= val_dias <= 15)
+    km_no_prazo = (0 <= val_km <= 5000)
+    
+    return dias_no_prazo or km_no_prazo
+
+# ==============================================================================
+
 def executar_robo_principal():
     print("🚀 Iniciando Robô 1: Painel de Manutenção KMM...")
     
@@ -25,7 +59,6 @@ def executar_robo_principal():
 
     with sync_playwright() as p:
         navegador = p.chromium.launch(headless=True)
-        # Resolução Full HD obrigatória para a nuvem
         contexto = navegador.new_context(viewport={"width": 1920, "height": 1080})
         pagina = contexto.new_page()
 
@@ -114,9 +147,8 @@ def executar_robo_principal():
             if df.columns.tolist() == list(range(len(df.columns))):
                 df.columns = [f"Col_{i}" for i in range(len(df.columns))]
 
-            print(f"   -> Encontrados {len(df)} registros com alinhamento correto!")
+            print(f"   -> Encontrados {len(df)} registros na tela!")
 
-            # Identifica as colunas chaves
             col_dias = next((c for c in df.columns if 'dia' in str(c).lower()), None)
             col_km = next((c for c in df.columns if 'km' in str(c).lower() or 'hor' in str(c).lower()), None)
             col_tabela = next((c for c in df.columns if any(p in str(c).lower() for p in ['tabela', 'plano', 'equipamento'])), None)
@@ -124,25 +156,20 @@ def executar_robo_principal():
             dados_vencidas = [df.columns.tolist()]
             dados_a_vencer = [df.columns.tolist()]
 
+            # 🔄 EXECUÇÃO DAS REGRAS ISOLADAS
             for _, row in df.iterrows():
                 val_dias = extrair_numero(row[col_dias]) if col_dias else 999999
                 val_km = extrair_numero(row[col_km]) if col_km else 999999
-                tabela_plano = str(row[col_tabela]).upper() if col_tabela else ""
+                tabela_plano = str(row[col_tabela]).upper().strip() if col_tabela else ""
 
-                # 1. Regra de Vencidas (Qualquer valor negativo)
-                if val_dias < 0 or val_km < 0:
+                # 1. Avalia se entra na aba VENCIDA
+                if verificar_vencida(val_dias, val_km):
                     dados_vencidas.append(row.tolist())
                     continue
 
-                # 2. Regra de À Vencer
-                # 🚨 EXCEÇÃO: Carreta Baú 60k -> Avalia APENAS DIAS
-                if "SEMI REBOQUE BAU - 60.000 KM" in tabela_plano or "BAU - 60.000" in tabela_plano:
-                    if 0 <= val_dias <= 15:
-                        dados_a_vencer.append(row.tolist())
-                # DEMAIS VEÍCULOS: Avalia DIAS (0 a 15) OU KM (0 a 1000)
-                else:
-                    if (0 <= val_dias <= 15) or (0 <= val_km <= 1000):
-                        dados_a_vencer.append(row.tolist())
+                # 2. Avalia se entra na aba A VENCER (Filtros A e B)
+                if verificar_a_vencer(val_dias, val_km, tabela_plano):
+                    dados_a_vencer.append(row.tolist())
 
             print(f"4. Enviando -> Vencidas: {len(dados_vencidas)-1} | À Vencer: {len(dados_a_vencer)-1}")
 
