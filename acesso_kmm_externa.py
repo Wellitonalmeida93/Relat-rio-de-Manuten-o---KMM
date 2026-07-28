@@ -4,7 +4,7 @@ import requests
 import time
 import os
 
-# 🔗 URL do Novo Webhook Implantado
+# 🔗 URL do Webhook da Planilha Externa
 URL_WEBHOOK_EXTERNA = "https://script.google.com/macros/s/AKfycbwUY4i91G2lGbXMua7HyC2LLK4Rkkp5-z4zYCec_NKe9EVHHH1mznGne7uSQP-nOXYJJA/exec"
 
 def executar_robo_manutencao_externa():
@@ -15,7 +15,7 @@ def executar_robo_manutencao_externa():
 
     with sync_playwright() as p:
         navegador = p.chromium.launch(headless=True)
-        # Resolução Full HD obrigatória para a nuvem
+        # Força resolução Full HD para renderizar o ExtJS sem esconder elementos
         contexto = navegador.new_context(viewport={"width": 1920, "height": 1080})
         pagina = contexto.new_page()
 
@@ -38,7 +38,11 @@ def executar_robo_manutencao_externa():
                         return True
                 except:
                     continue
-            pagina.get_by_text(texto, exact=False).first.click(force=True)
+            try:
+                pagina.get_by_text(texto, exact=False).first.click(force=True)
+                return True
+            except:
+                return False
 
         print("2. Navegando até 'Veículos em manutenção'...")
         clicar_menu("Manutenção de Veículos")
@@ -47,43 +51,83 @@ def executar_robo_manutencao_externa():
 
         clicar_menu("Veículos em manutenção")
         pagina.wait_for_load_state("networkidle")
-        time.sleep(3)
+        time.sleep(4)
 
         print("3. Selecionando '--Manutenção Externa--'...")
+        selecionado = False
         for frame in pagina.frames:
+            # Estratégia A: Select HTML nativo
             try:
                 select_elem = frame.locator("select").first
                 if select_elem.is_visible(timeout=1000):
-                    select_elem.click(force=True)
                     select_elem.select_option(label="--Manutenção Externa--")
                     select_elem.dispatch_event("change")
-                    select_elem.press("Enter")
+                    selecionado = True
                     break
-                else:
-                    opcao = frame.get_by_text("--Manutenção Externa--", exact=False).first
-                    if opcao.is_visible(timeout=1000):
-                        opcao.click(force=True)
-                        break
             except:
-                continue
+                pass
+            
+            # Estratégia B: Combo ExtJS por preenchimento e Enter
+            try:
+                inputs = frame.locator("input").all()
+                for inp in inputs:
+                    if inp.is_visible(timeout=500):
+                        inp.click(force=True)
+                        inp.fill("--Manutenção Externa--")
+                        inp.press("Enter")
+                        inp.press("Tab")
+                        selecionado = True
+                        break
+                if selecionado:
+                    break
+            except:
+                pass
 
-        time.sleep(2)
+            # Estratégia C: Clique no texto da opção
+            try:
+                opcao = frame.get_by_text("--Manutenção Externa--", exact=False).first
+                if opcao.is_visible(timeout=1000):
+                    opcao.click(force=True)
+                    selecionado = True
+                    break
+            except:
+                pass
 
-        print("4. Clicando em 'Confirmar'...")
+        time.sleep(3)
+
+        print("4. Clicando no botão 'Confirmar'...")
+        confirmado = False
         for frame in pagina.frames:
             try:
                 btn = frame.get_by_text("Confirmar", exact=False).first
                 if btn.is_visible(timeout=1000):
                     btn.scroll_into_view_if_needed()
                     btn.click(force=True)
+                    confirmado = True
                     break
             except:
                 continue
 
-        pagina.wait_for_load_state("networkidle")
-        time.sleep(10)
+        if not confirmado:
+            try:
+                pagina.get_by_text("Confirmar", exact=False).first.click(force=True)
+            except:
+                pass
 
-        print("5. Extraindo dados da grade ExtJS...")
+        print("5. Aguardando a busca e renderização dos dados...")
+        pagina.wait_for_load_state("networkidle")
+        time.sleep(12)
+
+        # Rola o scroll da grade ExtJS para forçar o carregamento do DOM
+        for _ in range(5):
+            for f in pagina.frames:
+                try:
+                    f.evaluate("let s = document.querySelector('.x-grid3-scroller'); if(s) { s.scrollTop += 500; }")
+                except:
+                    pass
+            time.sleep(0.5)
+
+        print("6. Extraindo dados da grade ExtJS...")
         dados_capturados = None
 
         for frame in pagina.frames:
@@ -130,9 +174,8 @@ def executar_robo_manutencao_externa():
 
         navegador.close()
 
-        # Trava de segurança: lança erro no GitHub Actions se vier zerado
         if not dados_capturados:
-            raise RuntimeError("❌ [ERRO CRÍTICO] Nenhuma linha foi encontrada na tabela do KMM. Verifique se a busca carregou dados na tela!")
+            raise RuntimeError("❌ [ERRO CRÍTICO] Nenhuma linha foi encontrada na tabela do KMM. Verifique se a opção '--Manutenção Externa--' foi selecionada corretamente e se existem dados para o filtro!")
 
         headers = dados_capturados['headers']
         rows = dados_capturados['rows']
@@ -146,10 +189,9 @@ def executar_robo_manutencao_externa():
 
         dados_envio = [df.columns.tolist()] + df.values.tolist()
 
-        print(f"6. Enviando {len(df)} registros para a Planilha Externa...")
+        print(f"7. Enviando {len(df)} registros para a Planilha Externa...")
         resposta = requests.post(URL_WEBHOOK_EXTERNA, json={"dados": dados_envio})
 
-        # Trava de segurança: lança erro no GitHub Actions se o Sheets rejeitar
         if resposta.status_code != 200 or "Sucesso" not in resposta.text:
             raise RuntimeError(f"❌ [ERRO GOOGLE SHEETS] Falha no Webhook: Código {resposta.status_code} - Resposta: {resposta.text}")
 
