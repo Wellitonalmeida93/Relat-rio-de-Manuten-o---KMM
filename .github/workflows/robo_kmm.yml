@@ -2,9 +2,7 @@ name: Robô KMM - Webhook (De Hora em Hora)
 
 on:
   schedule:
-    # Roda no minuto 0 de todas as horas
     - cron: '0 * * * *'
-  # Botão de execução manual no GitHub Actions
   workflow_dispatch:
 
 jobs:
@@ -25,8 +23,8 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Instalar Navegador Chromium e Dependências de Tela do Linux
-        run: npx playwright install --with-deps chromium
+      - name: Instalar Chromium e Dependências do Linux
+        run: python -m playwright install --with-deps chromium
 
       - name: Executar Automação KMM com Monitor Virtual (Xvfb)
         env:
