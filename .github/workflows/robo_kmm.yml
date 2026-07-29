@@ -40,10 +40,6 @@ jobs:
           # Injeta as senhas que estão seguras no "GitHub Secrets"
           KMM_USER: ${{ secrets.KMM_USER }}
           KMM_PASS: ${{ secrets.KMM_PASS }}
-          
-          # Se você quiser proteger a URL do Webhook também, pode colocar no Secrets. 
-          # Caso contrário, o código usará a URL padrão que já está no seu script Python.
           URL_WEBHOOK: ${{ secrets.URL_WEBHOOK }} 
-        run: acesso_kmm.py
-          # ATENÇÃO: Troque "seu_script.py" pelo nome real do seu arquivo Python!
-          python seu_script.py
+        run: python acesso_kmm.py
+       
