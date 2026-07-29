@@ -86,11 +86,11 @@ def capturar_e_limpar_relatorio():
             try:
                 texto_completo = frame.locator("body").inner_text()
                 if texto_completo and "Frota" in texto_completo:
-                    linhas = texto_completo.split("\\n")
+                    linhas = texto_completo.split("\n")
                     for l in linhas:
                         l_limpa = l.strip()
                         if l_limpa:
-                            partes = [p.strip() for p in l_limpa.split("\\t") if p.strip()]
+                            partes = [p.strip() for p in l_limpa.split("\t") if p.strip()]
                             if not partes:
                                 partes = [l_limpa]
                             linhas_brutas.append(partes)
