@@ -19,13 +19,20 @@ def extrair_numero(valor):
         return int(match.group(1))
     return 999999
 
+# ==============================================================================
+# REGRAS DE NEGÓCIO
+# ==============================================================================
+
 def verificar_vencida(val_dias, val_km):
     return val_dias < 0 or val_km < 0
 
 def verificar_a_vencer(val_dias, val_km, tabela_plano):
     NOME_EXCECAO = "TABELA BASICA RODANTE SEMI REBOQUE BAU - 60.000 KM"
+    
+    # Regra 3: Dias <= 15 ou Não Controlada
     cond_dias = (0 <= val_dias <= 15) or (val_dias == 999999)
 
+    # Regras 1 e 2: KM <= 5000 ou Não Controlada (Ignorado se for Semi Reboque)
     if NOME_EXCECAO in tabela_plano:
         cond_km = True  
     else:
@@ -33,76 +40,55 @@ def verificar_a_vencer(val_dias, val_km, tabela_plano):
 
     return cond_dias and cond_km
 
+# ==============================================================================
+
 def executar_robo_principal():
-    print("🚀 Iniciando Robô 1: Painel de Manutenção KMM...")
+    print("🚀 Iniciando Robô KMM (Modo Tela Real)...")
     
     usuario = os.environ.get("KMM_USER", "matheusd")
     senha = os.environ.get("KMM_PASS", "328254Ma")
 
     with sync_playwright() as p:
-        # Configurações otimizadas para rendering de ExtJS no Linux
-        navegador = p.chromium.launch(
-            headless=True,
-            args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--start-maximized"]
-        )
-        contexto = navegador.new_context(
-            viewport={"width": 1920, "height": 1080},
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-        )
+        # headless=False faz o navegador rodar exatamente igual ao seu PC
+        navegador = p.chromium.launch(headless=False)
+        contexto = navegador.new_context(viewport={"width": 1920, "height": 1080})
         pagina = contexto.new_page()
 
-        # Aceita popups ou alertas do KMM automaticamente
-        pagina.on("dialog", lambda dialog: dialog.accept())
-
         print("1. Acessando o KMM e fazendo login...")
-        pagina.goto("https://kmm.pizzattolog.com.br/index.cfm", wait_until="networkidle")
-        
+        pagina.goto("https://kmm.pizzattolog.com.br/index.cfm")
         pagina.locator("input[type='text']").first.fill(usuario)
         campo_senha = pagina.locator("input[type='password']").first
         campo_senha.fill(senha)
         campo_senha.press("Enter")
 
         pagina.wait_for_load_state("networkidle")
-        time.sleep(5)
+        time.sleep(4)
 
-        print(f"   [LOG] URL pós-login: {pagina.url}")
-        print(f"   [LOG] Quantidade de Frames encontrados: {len(pagina.frames)}")
-
-        def clicar_menu_extjs(texto):
-            """Simula passar o mouse (hover) antes de clicar para abrir submenus no ExtJS"""
-            for frame in [pagina] + pagina.frames:
+        def clicar_menu(texto):
+            for frame in pagina.frames:
                 try:
                     elem = frame.get_by_text(texto, exact=False).first
                     if elem.is_visible(timeout=2000):
-                        elem.hover()
-                        time.sleep(0.5)
                         elem.click(force=True)
-                        print(f"   [LOG] Menu '{texto}' acionado com sucesso!")
                         return True
                 except:
                     continue
-            print(f"   [AVISO] Menu '{texto}' não encontrado.")
-            return False
+            pagina.get_by_text(texto, exact=False).first.click(force=True)
 
-        print("2. Navegando até 'Painel de Manutenção'...")
-        clicar_menu_extjs("Manutenção de Veículos")
+        print("2. Navegando nos menus...")
+        clicar_menu("Manutenção de Veículos")
+        pagina.wait_for_load_state("networkidle")
         time.sleep(2)
 
-        clicar_menu_extjs("Painel de Manutenção")
+        clicar_menu("Painel de Manutenção")
         pagina.wait_for_load_state("networkidle")
-        time.sleep(12)
-
-        # FORÇA O EXTJS A RECALCULAR O LAYOUT DA GRADE EM MODO HEADLESS
-        pagina.evaluate("window.dispatchEvent(new Event('resize'));")
+        time.sleep(8)
 
         print("3. Extraindo colunas visíveis da grade ExtJS...")
         dados_capturados = None
 
-        for idx, frame in enumerate(pagina.frames):
+        for frame in pagina.frames:
             try:
-                # Força atualização de layout no frame específico
-                frame.evaluate("window.dispatchEvent(new Event('resize'));")
-
                 res = frame.evaluate('''() => {
                     let hdCells = document.querySelectorAll('.x-grid3-header .x-grid3-hd-inner');
                     let headers = [];
@@ -134,22 +120,14 @@ def executar_robo_principal():
                         }
                     });
 
-                    return { headers: headers, rows: rows, frameUrl: window.location.href };
+                    return { headers: headers, rows: rows };
                 }''')
 
                 if res and res.get('rows') and len(res['rows']) > 0:
-                    print(f"   [SUCESSO] Dados capturados no Frame #{idx} ({res.get('frameUrl')})!")
                     dados_capturados = res
                     break
-            except Exception:
+            except:
                 continue
-
-        # Diagnóstico caso a grade continue sem retornar linhas
-        if not dados_capturados:
-            print("   [DIAGNÓSTICO] Nenhuma linha foi encontrada nos frames.")
-            print("   [DIAGNÓSTICO] URLs das frames abertas:")
-            for i, f in enumerate(pagina.frames):
-                print(f"      Frame #{i}: {f.url}")
 
         navegador.close()
 
