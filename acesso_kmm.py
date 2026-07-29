@@ -4,11 +4,15 @@ import requests
 import time
 import os
 import re
+from dotenv import load_dotenv
 
-URL_WEBHOOK_PRINCIPAL = "https://script.google.com/macros/s/AKfycbwYy133M99sXk_d1yIsH68eIAnw-a4MUnCsk0YvN33h_lP6kX8-H-3y_l0wP_R3Z08m/exec"
+# Carrega as variáveis de ambiente do arquivo .env
+load_dotenv()
+
+URL_WEBHOOK_PRINCIPAL = os.getenv("URL_WEBHOOK", "https://script.google.com/macros/s/AKfycbwYy133M99sXk_d1yIsH68eIAnw-a4MUnCsk0YvN33h_lP6kX8-H-3y_l0wP_R3Z08m/exec")
 
 def extrair_numero(valor):
-    """Extrai apenas o número (positivo ou negativo) de um texto."""
+    """Extrai apenas o número (positivo ou negativo) de um texto. Retorna 999999 para Não Controlada."""
     if not valor or str(valor).strip().upper() in ["NÃO CONTROLADA", "NAO CONTROLADA", "NAN", ""]:
         return 999999
     val_limpo = str(valor).replace('.', '').strip()
@@ -25,35 +29,47 @@ def verificar_vencida(val_dias, val_km):
     """
     1️⃣ ABA VENCIDA (Sem filtro especial):
     Qualquer indicador negativo envia o veículo para Vencidas.
+    (999999 'Não Controlada' é ignorado aqui por ser positivo)
     """
     return val_dias < 0 or val_km < 0
 
 
 def verificar_a_vencer(val_dias, val_km, tabela_plano):
     """
-    2️⃣ ABA A VENCER (Dois Filtros Isolados):
+    2️⃣ ABA A VENCER (As 3 Regras Acordadas):
+    - Regra 2: KM <= 5000 ou Não Controlada
+    - Regra 3: Dias <= 15 ou Não Controlada
+    - Regra 1: Se for a tabela Semi Reboque, a Regra 2 (KM) é sumariamente ignorada.
     """
     NOME_EXCECAO = "TABELA BASICA RODANTE SEMI REBOQUE BAU - 60.000 KM"
     
     # --------------------------------------------------------------------------
-    # FILTRO B: Exceção Semi Reboque Baú 60k (Avalia APENAS Dias)
+    # AVALIAÇÃO DOS DIAS (Regra 3)
+    # Considera prazo OK se estiver entre 0 e 15 dias, OU se for 999999 (Não controlada)
     # --------------------------------------------------------------------------
-    if NOME_EXCECAO in tabela_plano:
-        return 0 <= val_dias <= 15
+    cond_dias = (0 <= val_dias <= 15) or (val_dias == 999999)
 
     # --------------------------------------------------------------------------
-    # FILTRO A: Regra Geral (Dias entre 0 e 15 OU KM entre 0 e 5.000)
+    # AVALIAÇÃO DO KM (Regras 1 e 2)
+    # Considera prazo OK se estiver entre 0 e 5000, OU se for 999999 (Não controlada)
     # --------------------------------------------------------------------------
-    dias_no_prazo = (0 <= val_dias <= 15)
-    km_no_prazo = (0 <= val_km <= 5000)
+    cond_km = (0 <= val_km <= 5000) or (val_km == 999999)
     
-    return dias_no_prazo or km_no_prazo
+    # Exceção (Regra 1): Se for o Semi Reboque, forçamos o KM a ser válido
+    if NOME_EXCECAO in tabela_plano:
+        cond_km = True
+
+    # --------------------------------------------------------------------------
+    # RESULTADO: A linha só passa se for aprovada no teste de Dias "E" (and) de KM
+    # --------------------------------------------------------------------------
+    return cond_dias and cond_km
 
 # ==============================================================================
 
 def executar_robo_principal():
     print("🚀 Iniciando Robô 1: Painel de Manutenção KMM...")
     
+    # Puxa credenciais seguras. Se não achar, usa os padrões que você forneceu.
     usuario = os.environ.get("KMM_USER", "matheusd")
     senha = os.environ.get("KMM_PASS", "328254Ma")
 
@@ -167,7 +183,7 @@ def executar_robo_principal():
                     dados_vencidas.append(row.tolist())
                     continue
 
-                # 2. Avalia se entra na aba A VENCER (Filtros A e B)
+                # 2. Avalia se entra na aba A VENCER (Regras 1, 2 e 3)
                 if verificar_a_vencer(val_dias, val_km, tabela_plano):
                     dados_a_vencer.append(row.tolist())
 
