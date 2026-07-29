@@ -15,7 +15,6 @@ URL_WEBHOOK_PRINCIPAL = os.environ.get(
 )
 
 def extrair_numero(valor):
-    """Extrai apenas o número (positivo ou negativo) de um texto. Retorna 999999 para Não Controlada."""
     if not valor or str(valor).strip().upper() in ["NÃO CONTROLADA", "NAO CONTROLADA", "NAN", ""]:
         return 999999
     val_limpo = str(valor).replace('.', '').strip()
@@ -25,39 +24,21 @@ def extrair_numero(valor):
     return 999999
 
 # ==============================================================================
-# 🧩 REGRAS DE NEGÓCIO ISOLADAS
+# REGRAS DE NEGÓCIO
 # ==============================================================================
-
 def verificar_vencida(val_dias, val_km):
-    """
-    1️⃣ ABA VENCIDA: Qualquer indicador negativo (< 0) envia para Vencidas.
-    """
     return val_dias < 0 or val_km < 0
 
-
 def verificar_a_vencer(val_dias, val_km, tabela_plano):
-    """
-    2️⃣ ABA A VENCER (Aplica as 3 Regras):
-    - Regra 3: Dias <= 15 ou Não Controlada (999999)
-    - Regra 2: KM <= 5000 ou Não Controlada (999999)
-    - Regra 1: Se for a tabela 'SEMI REBOQUE BAU - 60.000 KM', ignora a validação de KM.
-    """
     NOME_EXCECAO = "TABELA BASICA RODANTE SEMI REBOQUE BAU - 60.000 KM"
-    
-    # Regra 3: Validação dos Dias
     cond_dias = (0 <= val_dias <= 15) or (val_dias == 999999)
-
-    # Regras 1 e 2: Validação do KM + Exceção da Tabela
     if NOME_EXCECAO in tabela_plano:
-        cond_km = True  # Regra 1: Ignora o limite de KM para essa tabela
+        cond_km = True  
     else:
-        cond_km = (0 <= val_km <= 5000) or (val_km == 999999)  # Regra 2
-
-    # A linha só entra na aba "À Vencer" se atender AMBOS os critérios (E)
+        cond_km = (0 <= val_km <= 5000) or (val_km == 999999)  
     return cond_dias and cond_km
 
 # ==============================================================================
-
 def executar_robo_principal():
     print("🚀 Iniciando Robô KMM...")
     
@@ -65,10 +46,8 @@ def executar_robo_principal():
     senha = os.environ.get("KMM_PASS", "328254Ma")
 
     with sync_playwright() as p:
-        # Detecta se está na nuvem com/sem monitor e ajusta o modo automaticamente
         is_headless = os.environ.get("GITHUB_ACTIONS") == "true" and "DISPLAY" not in os.environ
         navegador = p.chromium.launch(headless=is_headless)
-        
         contexto = navegador.new_context(viewport={"width": 1920, "height": 1080})
         pagina = contexto.new_page()
 
@@ -80,7 +59,7 @@ def executar_robo_principal():
         campo_senha.press("Enter")
 
         pagina.wait_for_load_state("networkidle")
-        time.sleep(4)
+        time.sleep(5)
 
         def clicar_menu(texto):
             for frame in pagina.frames:
@@ -95,12 +74,40 @@ def executar_robo_principal():
 
         print("2. Navegando até 'Painel de Manutenção'...")
         clicar_menu("Manutenção de Veículos")
-        pagina.wait_for_load_state("networkidle")
-        time.sleep(2)
+        time.sleep(3)
 
         clicar_menu("Painel de Manutenção")
-        pagina.wait_for_load_state("networkidle")
-        time.sleep(8)
+        
+        print(" -> Aguardando o KMM processar os dados (O servidor da nuvem tem latência maior, aguarde)...")
+        
+        # =========================================================================================
+        # ESPERA INTELIGENTE: Monitora a tela até as linhas aparecerem (limite de 60 segundos)
+        # =========================================================================================
+        tabela_carregada = False
+        for tentativa in range(60): 
+            for frame in pagina.frames:
+                try:
+                    if frame.locator('.x-grid3-row').count() > 0:
+                        tabela_carregada = True
+                        break
+                except:
+                    pass
+            
+            if tabela_carregada:
+                print(f"   [LOG] Sucesso! Os dados apareceram após {tentativa} segundos de espera.")
+                time.sleep(3) # Tempo extra só pro navegador terminar de renderizar o visual
+                break
+                
+            time.sleep(1) # Aguarda 1 segundo e tenta olhar a tela de novo
+
+        if not tabela_carregada:
+            print("   [AVISO] A tabela não carregou após 60s. Forçando redimensionamento do monitor virtual...")
+            try:
+                pagina.evaluate("window.dispatchEvent(new Event('resize'));")
+                time.sleep(5)
+            except:
+                pass
+        # =========================================================================================
 
         print("3. Extraindo colunas visíveis da grade ExtJS...")
         dados_capturados = None
@@ -166,7 +173,6 @@ def executar_robo_principal():
             dados_vencidas = [df.columns.tolist()]
             dados_a_vencer = [df.columns.tolist()]
 
-            # 🔄 APLICAÇÃO DAS REGRAS
             for _, row in df.iterrows():
                 val_dias = extrair_numero(row[col_dias]) if col_dias else 999999
                 val_km = extrair_numero(row[col_km]) if col_km else 999999
