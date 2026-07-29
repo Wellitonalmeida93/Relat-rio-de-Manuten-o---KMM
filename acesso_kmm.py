@@ -85,7 +85,9 @@ def capturar_e_limpar_relatorio():
         for frame in pagina.frames:
             try:
                 texto_completo = frame.locator("body").inner_text()
-                if texto_completo and "Frota" in texto_completo:
+                
+                # Deixamos apenas a verificação se existe algum texto, removendo a trava do "Frota"
+                if texto_completo: 
                     linhas = texto_completo.split("\n")
                     for l in linhas:
                         l_limpa = l.strip()
@@ -96,8 +98,6 @@ def capturar_e_limpar_relatorio():
                             linhas_brutas.append(partes)
             except Exception:
                 continue
-
-        navegador.close()
 
         print("8. Aplicando tratamento dos dados...")
         if linhas_brutas:
