@@ -1,204 +1,105 @@
-from playwright.sync_api import sync_playwright
-import pandas as pd
 import requests
-import time
-import os
-import re
-from dotenv import load_dotenv
+url_sheets = "https://script.google.com/macros/s/AKfycbwEMY8eHwKIGtd2fuHpvMmh_a14EAGzdf8Qgg41AKCiE_pOD4ifQFx4epFZklFYu46w/exec"
 
-# Carrega variáveis do arquivo .env caso esteja rodando localmente
-load_dotenv()
+dados_para_sheets = {}
 
-URL_WEBHOOK_PRINCIPAL = os.environ.get(
-    "URL_WEBHOOK", 
-    "https://script.google.com/macros/s/AKfycbwYy133M99sXk_d1yIsH68eIAnw-a4MUnCsk0YvN33h_lP6kX8-H-3y_l0wP_R3Z08m/exec"
+if coluna_status:
+    for status_val, df_grupo in df_final.groupby(coluna_status):
+
+        status_nome = str(status_val).strip()
+        status_lower = status_nome.lower()
+
+        if status_lower in ["ok", "nan", ""]:
+            continue
+
+        df_sub = df_grupo.copy()
+
+        if "vencer" in status_lower and "vencida" not in status_lower:
+
+            cond_km = pd.Series(True, index=df_sub.index)
+            cond_dias = pd.Series(True, index=df_sub.index)
+
+            if coluna_km:
+
+                is_nao_controlada_km = (
+                    df_sub[coluna_km]
+                    .astype(str)
+                    .str.lower()
+                    .str.contains("nao controlada|não controlada")
+                )
+
+                s_km = (
+                    df_sub[coluna_km]
+                    .astype(str)
+                    .str.replace(r'[^\d,-]', '', regex=True)
+                    .str.replace(',', '.')
+                )
+
+                km_num = pd.to_numeric(s_km, errors='coerce')
+
+                cond_km = (km_num <= 5000) | is_nao_controlada_km
+
+                if coluna_tabela:
+
+                    is_tabela_excecao = (
+                        df_sub[coluna_tabela]
+                        .astype(str)
+                        .str.upper()
+                        .str.contains(
+                            "TABELA BASICA RODANTE SEMI REBOQUE BAU - 60.000 KM",
+                            regex=False
+                        )
+                    )
+
+                    cond_km = cond_km | is_tabela_excecao
+
+            if coluna_dias:
+
+                is_nao_controlada_dias = (
+                    df_sub[coluna_dias]
+                    .astype(str)
+                    .str.lower()
+                    .str.contains("nao controlada|não controlada")
+                )
+
+                s_dias = (
+                    df_sub[coluna_dias]
+                    .astype(str)
+                    .str.replace(r'[^\d,-]', '', regex=True)
+                    .str.replace(',', '.')
+                )
+
+                dias_num = pd.to_numeric(s_dias, errors='coerce')
+
+                cond_dias = (dias_num <= 15) | is_nao_controlada_dias
+
+            df_sub = df_sub[cond_km & cond_dias]
+
+        if not df_sub.empty:
+
+            nome_aba = re.sub(r'[\:\*\[\]\?\\\/]', '', status_nome)[:30]
+
+            matriz = [df_sub.columns.tolist()]
+            matriz.extend(
+                df_sub.fillna("").astype(str).values.tolist()
+            )
+
+            dados_para_sheets[nome_aba] = matriz
+
+if not dados_para_sheets:
+    dados_para_sheets["Sem Registros"] = [
+        ["Mensagem"],
+        ["Nenhum registro encontrado"]
+    ]
+
+print("📤 Enviando para Google Sheets...")
+
+resposta = requests.post(
+    url_sheets,
+    json=dados_para_sheets,
+    timeout=300
 )
 
-def extrair_numero(valor):
-    if not valor or str(valor).strip().upper() in ["NÃO CONTROLADA", "NAO CONTROLADA", "NAN", ""]:
-        return 999999
-    val_limpo = str(valor).replace('.', '').strip()
-    match = re.search(r'(-?\d+)', val_limpo)
-    if match:
-        return int(match.group(1))
-    return 999999
-
-# ==============================================================================
-# REGRAS DE NEGÓCIO
-# ==============================================================================
-def verificar_vencida(val_dias, val_km):
-    return val_dias < 0 or val_km < 0
-
-def verificar_a_vencer(val_dias, val_km, tabela_plano):
-    NOME_EXCECAO = "TABELA BASICA RODANTE SEMI REBOQUE BAU - 60.000 KM"
-    cond_dias = (0 <= val_dias <= 15) or (val_dias == 999999)
-    if NOME_EXCECAO in tabela_plano:
-        cond_km = True  
-    else:
-        cond_km = (0 <= val_km <= 5000) or (val_km == 999999)  
-    return cond_dias and cond_km
-
-# ==============================================================================
-def executar_robo_principal():
-    print("🚀 Iniciando Robô KMM...")
-    
-    usuario = os.environ.get("KMM_USER", "matheusd")
-    senha = os.environ.get("KMM_PASS", "328254Ma")
-
-    with sync_playwright() as p:
-        is_headless = os.environ.get("GITHUB_ACTIONS") == "true" and "DISPLAY" not in os.environ
-        navegador = p.chromium.launch(headless=is_headless)
-        contexto = navegador.new_context(viewport={"width": 1920, "height": 1080})
-        pagina = contexto.new_page()
-
-        print("1. Acessando o KMM e fazendo login...")
-        pagina.goto("https://kmm.pizzattolog.com.br/index.cfm")
-        pagina.locator("input[type='text']").first.fill(usuario)
-        campo_senha = pagina.locator("input[type='password']").first
-        campo_senha.fill(senha)
-        campo_senha.press("Enter")
-
-        pagina.wait_for_load_state("networkidle")
-        time.sleep(5)
-
-        def clicar_menu(texto):
-            for frame in pagina.frames:
-                try:
-                    elem = frame.get_by_text(texto, exact=False).first
-                    if elem.is_visible(timeout=2000):
-                        elem.click(force=True)
-                        return True
-                except:
-                    continue
-            pagina.get_by_text(texto, exact=False).first.click(force=True)
-
-        print("2. Navegando até 'Painel de Manutenção'...")
-        clicar_menu("Manutenção de Veículos")
-        time.sleep(3)
-
-        clicar_menu("Painel de Manutenção")
-        
-        print(" -> Aguardando o KMM processar os dados (O servidor da nuvem tem latência maior, aguarde)...")
-        
-        # =========================================================================================
-        # ESPERA INTELIGENTE: Monitora a tela até as linhas aparecerem (limite de 60 segundos)
-        # =========================================================================================
-        tabela_carregada = False
-        for tentativa in range(60): 
-            for frame in pagina.frames:
-                try:
-                    if frame.locator('.x-grid3-row').count() > 0:
-                        tabela_carregada = True
-                        break
-                except:
-                    pass
-            
-            if tabela_carregada:
-                print(f"   [LOG] Sucesso! Os dados apareceram após {tentativa} segundos de espera.")
-                time.sleep(3) # Tempo extra só pro navegador terminar de renderizar o visual
-                break
-                
-            time.sleep(1) # Aguarda 1 segundo e tenta olhar a tela de novo
-
-        if not tabela_carregada:
-            print("   [AVISO] A tabela não carregou após 60s. Forçando redimensionamento do monitor virtual...")
-            try:
-                pagina.evaluate("window.dispatchEvent(new Event('resize'));")
-                time.sleep(5)
-            except:
-                pass
-        # =========================================================================================
-
-        print("3. Extraindo colunas visíveis da grade ExtJS...")
-        dados_capturados = None
-
-        for frame in pagina.frames:
-            try:
-                res = frame.evaluate('''() => {
-                    let hdCells = document.querySelectorAll('.x-grid3-header .x-grid3-hd-inner');
-                    let headers = [];
-                    let validIndices = [];
-
-                    hdCells.forEach((hd, idx) => {
-                        let txt = hd.innerText ? hd.innerText.replace(/\\n/g, ' ').trim() : '';
-                        if (txt && !txt.includes('cancelBubble') && !txt.includes('ppmVEICU') && hd.offsetParent !== null) {
-                            headers.push(txt);
-                            validIndices.push(idx);
-                        }
-                    });
-
-                    let rowElems = document.querySelectorAll('.x-grid3-row');
-                    let rows = [];
-
-                    rowElems.forEach(row => {
-                        let cells = row.querySelectorAll('.x-grid3-cell-inner');
-                        let rowData = [];
-                        validIndices.forEach(i => {
-                            if (cells[i]) {
-                                rowData.push(cells[i].innerText.trim());
-                            } else {
-                                rowData.push('');
-                            }
-                        });
-                        if (rowData.some(val => val !== '')) {
-                            rows.push(rowData);
-                        }
-                    });
-
-                    return { headers: headers, rows: rows };
-                }''')
-
-                if res and res.get('rows') and len(res['rows']) > 0:
-                    dados_capturados = res
-                    break
-            except:
-                continue
-
-        navegador.close()
-
-        if dados_capturados:
-            headers = dados_capturados['headers']
-            rows = dados_capturados['rows']
-
-            df = pd.DataFrame(rows, columns=headers if len(headers) == len(rows[0]) else None)
-            if df.columns.tolist() == list(range(len(df.columns))):
-                df.columns = [f"Col_{i}" for i in range(len(df.columns))]
-
-            print(f"   -> Encontrados {len(df)} registros na tela!")
-
-            col_dias = next((c for c in df.columns if 'dia' in str(c).lower()), None)
-            col_km = next((c for c in df.columns if 'km' in str(c).lower() or 'hor' in str(c).lower()), None)
-            col_tabela = next((c for c in df.columns if any(p in str(c).lower() for p in ['tabela', 'plano', 'equipamento'])), None)
-
-            dados_vencidas = [df.columns.tolist()]
-            dados_a_vencer = [df.columns.tolist()]
-
-            for _, row in df.iterrows():
-                val_dias = extrair_numero(row[col_dias]) if col_dias else 999999
-                val_km = extrair_numero(row[col_km]) if col_km else 999999
-                tabela_plano = str(row[col_tabela]).upper().strip() if col_tabela else ""
-
-                if verificar_vencida(val_dias, val_km):
-                    dados_vencidas.append(row.tolist())
-                    continue
-
-                if verificar_a_vencer(val_dias, val_km, tabela_plano):
-                    dados_a_vencer.append(row.tolist())
-
-            print(f"4. Enviando -> Vencidas: {len(dados_vencidas)-1} | À Vencer: {len(dados_a_vencer)-1}")
-
-            payload = {
-                "vencidas": dados_vencidas,
-                "a_vencer": dados_a_vencer
-            }
-
-            resposta = requests.post(URL_WEBHOOK_PRINCIPAL, json=payload)
-            if resposta.status_code == 200 and "Sucesso" in resposta.text:
-                print(" ✨ PLANILHA PRINCIPAL ATUALIZADA COM SUCESSO!")
-            else:
-                print(f"[ERRO Webhook]: {resposta.text}")
-        else:
-            print("[ERRO] Nenhuma linha foi extraída do KMM.")
-
-if __name__ == "__main__":
-    executar_robo_principal()
+print("Status:", resposta.status_code)
+print("Resposta:", resposta.text)
+print(" 📊 Dados enviados para o Google Sheets!")
