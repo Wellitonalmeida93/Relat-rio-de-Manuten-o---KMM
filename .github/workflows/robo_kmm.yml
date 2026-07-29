@@ -1,12 +1,15 @@
-name: Robô KMM - Webhook (De Hora em Hora)
+name: Robô KMM - Google Sheets
 
 on:
-  schedule:
-    - cron: '0 * * * *'
-  workflow_dispatch:
+schedule:
+- cron: '0 * * * *'  # Executa de hora em hora
+workflow_dispatch:
+
 jobs:
 executar:
 runs-on: ubuntu-latest
+
+```
 steps:
   - name: Baixar código
     uses: actions/checkout@v4
@@ -31,3 +34,4 @@ steps:
       KMM_PASS: ${{ secrets.KMM_PASS }}
     run: |
       python acesso_kmm.py
+```
