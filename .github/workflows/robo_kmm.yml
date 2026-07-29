@@ -9,7 +9,7 @@ jobs:
 executar:
 runs-on: ubuntu-latest
 
-```
+
 steps:
   - name: Baixar código
     uses: actions/checkout@v4
@@ -34,4 +34,4 @@ steps:
       KMM_PASS: ${{ secrets.KMM_PASS }}
     run: |
       python acesso_kmm.py
-```
+
