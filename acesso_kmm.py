@@ -106,7 +106,19 @@ def executar_robo_principal():
 
         clicar_menu("Painel de Manutenção")
         pagina.wait_for_load_state("networkidle")
-        time.sleep(8)
+        
+        # Aumentamos o tempo para a máquina do GitHub conseguir processar o JavaScript
+        print(" -> Aguardando renderização pesada da tabela...")
+        time.sleep(15) 
+        
+        # Força o robô a esperar até que pelo menos uma linha da tabela exista no HTML
+        try:
+            for frame in pagina.frames:
+                if frame.locator('.x-grid3-row').count() > 0:
+                    break
+                frame.locator('.x-grid3-row').first.wait_for(state="attached", timeout=10000)
+        except:
+            pass # Se não achar por aqui, tenta ler na força bruta no próximo passo
 
         print("3. Extraindo colunas visíveis da grade ExtJS...")
         dados_capturados = None
