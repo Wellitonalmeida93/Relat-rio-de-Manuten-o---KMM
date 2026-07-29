@@ -160,7 +160,7 @@ def extrair_e_enviar_sheets():
             ]
 
         print("9. 📤 Enviando para Google Sheets...")
-        url_sheets = "https://script.google.com/macros/s/AKfycbx6hDsGcSTXhBn3Nt10FkEnf9OaqwjmHJMhyRyUHctX4xKJSZiesHkMXWwwaLbKbSAjvA/exec"
+        url_sheets = "https://script.google.com/macros/s/AKfycby0XLyYO0x2GftgmFwettc_jZKNEE3yDhO9mpNRLBavsRAHgn4veWWp_uBYhYMZq4nyAQ/exec"
         
         resposta = requests.post(
             url_sheets,
