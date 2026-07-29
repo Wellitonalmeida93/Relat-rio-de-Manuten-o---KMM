@@ -1,75 +1,6 @@
-from playwright.sync_api import sync_playwright
-import pandas as pd
-import requests
-import time
-import os
-import re
-from dotenv import load_dotenv
-
-# Carrega as variáveis de ambiente do arquivo .env
-load_dotenv()
-
-URL_WEBHOOK_PRINCIPAL = os.getenv("URL_WEBHOOK", "https://script.google.com/macros/s/AKfycbwYy133M99sXk_d1yIsH68eIAnw-a4MUnCsk0YvN33h_lP6kX8-H-3y_l0wP_R3Z08m/exec")
-
-def extrair_numero(valor):
-    """Extrai apenas o número (positivo ou negativo) de um texto. Retorna 999999 para Não Controlada."""
-    if not valor or str(valor).strip().upper() in ["NÃO CONTROLADA", "NAO CONTROLADA", "NAN", ""]:
-        return 999999
-    val_limpo = str(valor).replace('.', '').strip()
-    match = re.search(r'(-?\d+)', val_limpo)
-    if match:
-        return int(match.group(1))
-    return 999999
-
-# ==============================================================================
-# 🧩 REGRAS DE NEGÓCIO ISOLADAS
-# ==============================================================================
-
-def verificar_vencida(val_dias, val_km):
-    """
-    1️⃣ ABA VENCIDA (Sem filtro especial):
-    Qualquer indicador negativo envia o veículo para Vencidas.
-    (999999 'Não Controlada' é ignorado aqui por ser positivo)
-    """
-    return val_dias < 0 or val_km < 0
-
-
-def verificar_a_vencer(val_dias, val_km, tabela_plano):
-    """
-    2️⃣ ABA A VENCER (As 3 Regras Acordadas):
-    - Regra 2: KM <= 5000 ou Não Controlada
-    - Regra 3: Dias <= 15 ou Não Controlada
-    - Regra 1: Se for a tabela Semi Reboque, a Regra 2 (KM) é sumariamente ignorada.
-    """
-    NOME_EXCECAO = "TABELA BASICA RODANTE SEMI REBOQUE BAU - 60.000 KM"
-    
-    # --------------------------------------------------------------------------
-    # AVALIAÇÃO DOS DIAS (Regra 3)
-    # Considera prazo OK se estiver entre 0 e 15 dias, OU se for 999999 (Não controlada)
-    # --------------------------------------------------------------------------
-    cond_dias = (0 <= val_dias <= 15) or (val_dias == 999999)
-
-    # --------------------------------------------------------------------------
-    # AVALIAÇÃO DO KM (Regras 1 e 2)
-    # Considera prazo OK se estiver entre 0 e 5000, OU se for 999999 (Não controlada)
-    # --------------------------------------------------------------------------
-    cond_km = (0 <= val_km <= 5000) or (val_km == 999999)
-    
-    # Exceção (Regra 1): Se for o Semi Reboque, forçamos o KM a ser válido
-    if NOME_EXCECAO in tabela_plano:
-        cond_km = True
-
-    # --------------------------------------------------------------------------
-    # RESULTADO: A linha só passa se for aprovada no teste de Dias "E" (and) de KM
-    # --------------------------------------------------------------------------
-    return cond_dias and cond_km
-
-# ==============================================================================
-
 def executar_robo_principal():
     print("🚀 Iniciando Robô 1: Painel de Manutenção KMM...")
     
-    # Puxa credenciais seguras. Se não achar, usa os padrões que você forneceu.
     usuario = os.environ.get("KMM_USER", "matheusd")
     senha = os.environ.get("KMM_PASS", "328254Ma")
 
@@ -79,51 +10,69 @@ def executar_robo_principal():
         pagina = contexto.new_page()
 
         print("1. Acessando o KMM e fazendo login...")
-        pagina.goto("https://kmm.pizzattolog.com.br/index.cfm")
+        pagina.goto("https://kmm.pizzattolog.com.br/index.cfm", wait_until="networkidle")
+        
+        # Espera o campo de login estar totalmente carregado
+        pagina.locator("input[type='text']").first.wait_for(state="visible", timeout=30000)
         pagina.locator("input[type='text']").first.fill(usuario)
+        
         campo_senha = pagina.locator("input[type='password']").first
         campo_senha.fill(senha)
         campo_senha.press("Enter")
 
+        # Espera a página pós-login carregar a rede
         pagina.wait_for_load_state("networkidle")
-        time.sleep(3)
 
         def clicar_menu(texto):
+            """Procura o texto do menu em qualquer frame, espera ficar visível e clica."""
             for frame in pagina.frames:
                 try:
                     elem = frame.get_by_text(texto, exact=False).first
-                    if elem.is_visible(timeout=1000):
-                        elem.click(force=True)
-                        return True
+                    # Espera dinâmica: só clica quando o menu realmente aparecer na tela
+                    elem.wait_for(state="visible", timeout=5000)
+                    elem.click()
+                    return True
                 except:
                     continue
-            pagina.get_by_text(texto, exact=False).first.click(force=True)
+            
+            # Fallback caso não ache nos frames
+            elem_main = pagina.get_by_text(texto, exact=False).first
+            elem_main.wait_for(state="visible", timeout=5000)
+            elem_main.click()
 
         print("2. Navegando até 'Painel de Manutenção'...")
         clicar_menu("Manutenção de Veículos")
-        pagina.wait_for_load_state("networkidle")
-        time.sleep(2)
-
+        
+        print(" -> Aguardando menu de relatórios...")
         clicar_menu("Painel de Manutenção")
-        pagina.wait_for_load_state("networkidle")
-        
-        # Aumentamos o tempo para a máquina do GitHub conseguir processar o JavaScript
-        print(" -> Aguardando renderização pesada da tabela...")
-        time.sleep(15) 
-        
-        # Força o robô a esperar até que pelo menos uma linha da tabela exista no HTML
-        try:
-            for frame in pagina.frames:
-                if frame.locator('.x-grid3-row').count() > 0:
-                    break
-                frame.locator('.x-grid3-row').first.wait_for(state="attached", timeout=10000)
-        except:
-            pass # Se não achar por aqui, tenta ler na força bruta no próximo passo
 
-        print("3. Extraindo colunas visíveis da grade ExtJS...")
+        print(" -> Aguardando a tabela (ExtJS Grid) ser construída e populada...")
+        
+        # ESPERA DINÂMICA INTELIGENTE:
+        # Percorre os frames até encontrar a tabela ExtJS e ESPERA que a primeira linha (.x-grid3-row) seja inserida no DOM
+        frame_tabela = None
+        for _ in range(30):  # Tenta por até 30 segundos sem travar o código fixo
+            for frame in pagina.frames:
+                try:
+                    # Verifica se o elemento da linha existe e está visível
+                    linha = frame.locator('.x-grid3-row').first
+                    if linha.count() > 0:
+                        linha.wait_for(state="visible", timeout=10000)
+                        frame_tabela = frame
+                        break
+                except:
+                    continue
+            if frame_tabela:
+                break
+            pagina.wait_for_timeout(1000) # Espera 1s nativo antes de checar novamente
+
+        print("3. Extraindo colunas e dados visíveis da grade ExtJS...")
         dados_capturados = None
 
-        for frame in pagina.frames:
+        # Se encontrou o frame específico com as linhas, extrai diretamente dele
+        frames_para_buscar = [frame_tabela] if frame_tabela else pagina.frames
+
+        for frame in frames_para_buscar:
             try:
                 res = frame.evaluate('''() => {
                     let hdCells = document.querySelectorAll('.x-grid3-header .x-grid3-hd-inner');
@@ -166,53 +115,3 @@ def executar_robo_principal():
                 continue
 
         navegador.close()
-
-        if dados_capturados:
-            headers = dados_capturados['headers']
-            rows = dados_capturados['rows']
-
-            df = pd.DataFrame(rows, columns=headers if len(headers) == len(rows[0]) else None)
-            if df.columns.tolist() == list(range(len(df.columns))):
-                df.columns = [f"Col_{i}" for i in range(len(df.columns))]
-
-            print(f"   -> Encontrados {len(df)} registros na tela!")
-
-            col_dias = next((c for c in df.columns if 'dia' in str(c).lower()), None)
-            col_km = next((c for c in df.columns if 'km' in str(c).lower() or 'hor' in str(c).lower()), None)
-            col_tabela = next((c for c in df.columns if any(p in str(c).lower() for p in ['tabela', 'plano', 'equipamento'])), None)
-
-            dados_vencidas = [df.columns.tolist()]
-            dados_a_vencer = [df.columns.tolist()]
-
-            # 🔄 EXECUÇÃO DAS REGRAS ISOLADAS
-            for _, row in df.iterrows():
-                val_dias = extrair_numero(row[col_dias]) if col_dias else 999999
-                val_km = extrair_numero(row[col_km]) if col_km else 999999
-                tabela_plano = str(row[col_tabela]).upper().strip() if col_tabela else ""
-
-                # 1. Avalia se entra na aba VENCIDA
-                if verificar_vencida(val_dias, val_km):
-                    dados_vencidas.append(row.tolist())
-                    continue
-
-                # 2. Avalia se entra na aba A VENCER (Regras 1, 2 e 3)
-                if verificar_a_vencer(val_dias, val_km, tabela_plano):
-                    dados_a_vencer.append(row.tolist())
-
-            print(f"4. Enviando -> Vencidas: {len(dados_vencidas)-1} | À Vencer: {len(dados_a_vencer)-1}")
-
-            payload = {
-                "vencidas": dados_vencidas,
-                "a_vencer": dados_a_vencer
-            }
-
-            resposta = requests.post(URL_WEBHOOK_PRINCIPAL, json=payload)
-            if resposta.status_code == 200 and "Sucesso" in resposta.text:
-                print(" ✨ PLANILHA PRINCIPAL ATUALIZADA COM SUCESSO!")
-            else:
-                print(f"[ERRO Webhook]: {resposta.text}")
-        else:
-            print("[ERRO] Nenhuma linha foi extraída do KMM.")
-
-if __name__ == "__main__":
-    executar_robo_principal()
