@@ -11,7 +11,6 @@ URL_WEBHOOK_PRINCIPAL = os.environ.get(
 )
 
 def extrair_numero(valor):
-    """Extrai apenas o número (positivo ou negativo) de um texto. Retorna 999999 para Não Controlada."""
     if not valor or str(valor).strip().upper() in ["NÃO CONTROLADA", "NAO CONTROLADA", "NAN", ""]:
         return 999999
     val_limpo = str(valor).replace('.', '').strip()
@@ -20,45 +19,19 @@ def extrair_numero(valor):
         return int(match.group(1))
     return 999999
 
-# ==============================================================================
-# 🧩 REGRAS DE NEGÓCIO ISOLADAS (CORRIGIDAS)
-# ==============================================================================
-
 def verificar_vencida(val_dias, val_km):
-    """
-    1️⃣ ABA VENCIDA:
-    Qualquer indicador negativo (< 0) envia o veículo para Vencidas.
-    """
     return val_dias < 0 or val_km < 0
 
-
 def verificar_a_vencer(val_dias, val_km, tabela_plano):
-    """
-    2️⃣ ABA A VENCER (Cruza as 3 regras com a condição E):
-    """
     NOME_EXCECAO = "TABELA BASICA RODANTE SEMI REBOQUE BAU - 60.000 KM"
-    
-    # --------------------------------------------------------------------------
-    # Regra 3: Dias entre 0 e 15 OU "Não Controlada" (999999)
-    # --------------------------------------------------------------------------
     cond_dias = (0 <= val_dias <= 15) or (val_dias == 999999)
 
-    # --------------------------------------------------------------------------
-    # Regra 1 e Regra 2: Validação de KM + Exceção da Tabela
-    # --------------------------------------------------------------------------
     if NOME_EXCECAO in tabela_plano:
-        # Regra 1: Ignora validação de KM para a tabela Semi Reboque
         cond_km = True  
     else:
-        # Regra 2: KM entre 0 e 5000 OU "Não Controlada" (999999)
         cond_km = (0 <= val_km <= 5000) or (val_km == 999999)  
 
-    # --------------------------------------------------------------------------
-    # O registro só entra se atender tanto o prazo de Dias QUANTO o de KM
-    # --------------------------------------------------------------------------
     return cond_dias and cond_km
-
-# ==============================================================================
 
 def executar_robo_principal():
     print("🚀 Iniciando Robô 1: Painel de Manutenção KMM...")
@@ -67,8 +40,15 @@ def executar_robo_principal():
     senha = os.environ.get("KMM_PASS", "328254Ma")
 
     with sync_playwright() as p:
-        navegador = p.chromium.launch(headless=True)
-        contexto = navegador.new_context(viewport={"width": 1920, "height": 1080})
+        # Argumentos vitais para rodar Chromium em containers Linux (GitHub Actions)
+        navegador = p.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
+        )
+        contexto = navegador.new_context(
+            viewport={"width": 1920, "height": 1080},
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        )
         pagina = contexto.new_page()
 
         print("1. Acessando o KMM e fazendo login...")
@@ -79,30 +59,50 @@ def executar_robo_principal():
         campo_senha.press("Enter")
 
         pagina.wait_for_load_state("networkidle")
-        time.sleep(3)
+        time.sleep(4)
+
+        # DIAGNÓSTICO DE LOGIN
+        print(f"   [LOG] URL após login: {pagina.url}")
+        print(f"   [LOG] Quantidade de Frames encontrados: {len(pagina.frames)}")
 
         def clicar_menu(texto):
             for frame in pagina.frames:
                 try:
                     elem = frame.get_by_text(texto, exact=False).first
-                    if elem.is_visible(timeout=1000):
+                    if elem.is_visible(timeout=2000):
                         elem.click(force=True)
+                        print(f"   [LOG] Menu '{texto}' clicado com sucesso!")
                         return True
                 except:
                     continue
-            pagina.get_by_text(texto, exact=False).first.click(force=True)
+            try:
+                pagina.get_by_text(texto, exact=False).first.click(force=True)
+                print(f"   [LOG] Menu '{texto}' clicado via página principal!")
+                return True
+            except Exception as e:
+                print(f"   [AVISO] Falha ao clicar no menu '{texto}': {e}")
+                return False
 
         print("2. Navegando até 'Painel de Manutenção'...")
         clicar_menu("Manutenção de Veículos")
         pagina.wait_for_load_state("networkidle")
-        time.sleep(2)
+        time.sleep(3)
 
         clicar_menu("Painel de Manutenção")
         pagina.wait_for_load_state("networkidle")
-        time.sleep(8)
+        time.sleep(10)
 
         print("3. Extraindo colunas visíveis da grade ExtJS...")
         dados_capturados = None
+
+        # DIAGNÓSTICO DA GRADE
+        for idx, frame in enumerate(pagina.frames):
+            try:
+                qtd_linhas = frame.locator('.x-grid3-row').count()
+                if qtd_linhas > 0:
+                    print(f"   [LOG] Frame #{idx} contém {qtd_linhas} linhas de tabela (.x-grid3-row)!")
+            except:
+                pass
 
         for frame in pagina.frames:
             try:
@@ -165,18 +165,15 @@ def executar_robo_principal():
             dados_vencidas = [df.columns.tolist()]
             dados_a_vencer = [df.columns.tolist()]
 
-            # 🔄 EXECUÇÃO DAS REGRAS REVISADAS
             for _, row in df.iterrows():
                 val_dias = extrair_numero(row[col_dias]) if col_dias else 999999
                 val_km = extrair_numero(row[col_km]) if col_km else 999999
                 tabela_plano = str(row[col_tabela]).upper().strip() if col_tabela else ""
 
-                # 1. Avalia se entra na aba VENCIDA
                 if verificar_vencida(val_dias, val_km):
                     dados_vencidas.append(row.tolist())
                     continue
 
-                # 2. Avalia se entra na aba A VENCER (Regras 1, 2 e 3)
                 if verificar_a_vencer(val_dias, val_km, tabela_plano):
                     dados_a_vencer.append(row.tolist())
 
