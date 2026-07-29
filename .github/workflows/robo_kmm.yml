@@ -1,45 +1,37 @@
 name: Robô KMM - Webhook (De Hora em Hora)
 
-# Gatilhos: Define QUANDO o robô vai rodar
 on:
   schedule:
-    # Cron: Roda no minuto 0 de todas as horas (ex: 08:00, 09:00, 10:00...)
+    # Roda no minuto 0 de todas as horas
     - cron: '0 * * * *'
-  # Permite que você clique em um botão "Run workflow" no GitHub para rodar manualmente quando quiser
+  # Botão de execução manual no GitHub Actions
   workflow_dispatch:
 
 jobs:
   executar_robo:
-    runs-on: ubuntu-latest # Cria um servidor virtual Linux na nuvem do GitHub
+    runs-on: ubuntu-latest
 
     steps:
-      # 1. Puxa o seu código atualizado do repositório
       - name: Baixar o código
         uses: actions/checkout@v4
 
-      # 2. Prepara o Python no servidor
       - name: Configurar Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      # 3. Instala as bibliotecas necessárias
-      # Nota: Certifique-se de que seu requirements.txt tem: playwright, pandas, requests, python-dotenv
-      - name: Instalar dependências
+      - name: Instalar dependências Python
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # 4. Instala o navegador oculto para o Playwright funcionar
-      - name: Instalar Navegador Chromium
-        run: playwright install chromium
+      - name: Instalar Navegador Chromium e Dependências de Tela do Linux
+        run: npx playwright install --with-deps chromium
 
-      # 5. Roda o script de raspagem e Webhook
-      - name: Executar Automação KMM
+      - name: Executar Automação KMM com Monitor Virtual (Xvfb)
         env:
-          # Injeta as senhas que estão seguras no "GitHub Secrets"
           KMM_USER: ${{ secrets.KMM_USER }}
           KMM_PASS: ${{ secrets.KMM_PASS }}
-          URL_WEBHOOK: ${{ secrets.URL_WEBHOOK }} 
-        run: python acesso_kmm.py
-       
+          URL_WEBHOOK: ${{ secrets.URL_WEBHOOK }}
+        run: |
+          xvfb-run --server-args="-screen 0 1920x1080x24" python acesso_kmm.py
