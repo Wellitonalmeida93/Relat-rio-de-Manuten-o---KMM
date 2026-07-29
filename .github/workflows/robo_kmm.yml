@@ -7,7 +7,8 @@ on:
 
 jobs:
   executar_robo:
-    runs-on: ubuntu-latest
+    # Mudança importante: Usando ubuntu-22.04 para evitar o erro do libasound2
+    runs-on: ubuntu-22.04
 
     steps:
       - name: Baixar o código
