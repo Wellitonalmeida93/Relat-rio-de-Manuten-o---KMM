@@ -4,6 +4,10 @@ import requests
 import time
 import os
 import re
+from dotenv import load_dotenv
+
+# Carrega variáveis do arquivo .env caso esteja rodando localmente
+load_dotenv()
 
 URL_WEBHOOK_PRINCIPAL = os.environ.get(
     "URL_WEBHOOK", 
@@ -11,6 +15,7 @@ URL_WEBHOOK_PRINCIPAL = os.environ.get(
 )
 
 def extrair_numero(valor):
+    """Extrai apenas o número (positivo ou negativo) de um texto. Retorna 999999 para Não Controlada."""
     if not valor or str(valor).strip().upper() in ["NÃO CONTROLADA", "NAO CONTROLADA", "NAN", ""]:
         return 999999
     val_limpo = str(valor).replace('.', '').strip()
@@ -20,37 +25,50 @@ def extrair_numero(valor):
     return 999999
 
 # ==============================================================================
-# REGRAS DE NEGÓCIO
+# 🧩 REGRAS DE NEGÓCIO ISOLADAS
 # ==============================================================================
 
 def verificar_vencida(val_dias, val_km):
+    """
+    1️⃣ ABA VENCIDA: Qualquer indicador negativo (< 0) envia para Vencidas.
+    """
     return val_dias < 0 or val_km < 0
 
+
 def verificar_a_vencer(val_dias, val_km, tabela_plano):
+    """
+    2️⃣ ABA A VENCER (Aplica as 3 Regras):
+    - Regra 3: Dias <= 15 ou Não Controlada (999999)
+    - Regra 2: KM <= 5000 ou Não Controlada (999999)
+    - Regra 1: Se for a tabela 'SEMI REBOQUE BAU - 60.000 KM', ignora a validação de KM.
+    """
     NOME_EXCECAO = "TABELA BASICA RODANTE SEMI REBOQUE BAU - 60.000 KM"
     
-    # Regra 3: Dias <= 15 ou Não Controlada
+    # Regra 3: Validação dos Dias
     cond_dias = (0 <= val_dias <= 15) or (val_dias == 999999)
 
-    # Regras 1 e 2: KM <= 5000 ou Não Controlada (Ignorado se for Semi Reboque)
+    # Regras 1 e 2: Validação do KM + Exceção da Tabela
     if NOME_EXCECAO in tabela_plano:
-        cond_km = True  
+        cond_km = True  # Regra 1: Ignora o limite de KM para essa tabela
     else:
-        cond_km = (0 <= val_km <= 5000) or (val_km == 999999)  
+        cond_km = (0 <= val_km <= 5000) or (val_km == 999999)  # Regra 2
 
+    # A linha só entra na aba "À Vencer" se atender AMBOS os critérios (E)
     return cond_dias and cond_km
 
 # ==============================================================================
 
 def executar_robo_principal():
-    print("🚀 Iniciando Robô KMM (Modo Tela Real)...")
+    print("🚀 Iniciando Robô KMM...")
     
     usuario = os.environ.get("KMM_USER", "matheusd")
     senha = os.environ.get("KMM_PASS", "328254Ma")
 
     with sync_playwright() as p:
-        # headless=False faz o navegador rodar exatamente igual ao seu PC
-        navegador = p.chromium.launch(headless=False)
+        # Detecta se está na nuvem com/sem monitor e ajusta o modo automaticamente
+        is_headless = os.environ.get("GITHUB_ACTIONS") == "true" and "DISPLAY" not in os.environ
+        navegador = p.chromium.launch(headless=is_headless)
+        
         contexto = navegador.new_context(viewport={"width": 1920, "height": 1080})
         pagina = contexto.new_page()
 
@@ -75,7 +93,7 @@ def executar_robo_principal():
                     continue
             pagina.get_by_text(texto, exact=False).first.click(force=True)
 
-        print("2. Navegando nos menus...")
+        print("2. Navegando até 'Painel de Manutenção'...")
         clicar_menu("Manutenção de Veículos")
         pagina.wait_for_load_state("networkidle")
         time.sleep(2)
@@ -148,6 +166,7 @@ def executar_robo_principal():
             dados_vencidas = [df.columns.tolist()]
             dados_a_vencer = [df.columns.tolist()]
 
+            # 🔄 APLICAÇÃO DAS REGRAS
             for _, row in df.iterrows():
                 val_dias = extrair_numero(row[col_dias]) if col_dias else 999999
                 val_km = extrair_numero(row[col_km]) if col_km else 999999
