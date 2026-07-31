@@ -98,17 +98,19 @@ def extrair_e_enviar_sheets():
         linhas_brutas = []
         for frame in pagina.frames:
             try:
-                texto_completo = frame.locator("body").inner_text()
-                if texto_completo and len(texto_completo) > 100:
-                    linhas = texto_completo.split("\n")
-                    for l in linhas:
-                        l_limpa = l.strip()
-                        if l_limpa:
-                            partes = [p.strip() for p in l_limpa.split("\t") if p.strip()]
-                            if not partes:
-                                partes = [l_limpa]
-                            linhas_brutas.append(partes)
-            except:
+                # O KMM usa ExtJS, onde as linhas geralmente têm a classe .x-grid3-row ou <tr> padrão
+                # Vamos buscar as linhas renderizadas no HTML
+                linhas_html = frame.locator("tr, div.x-grid3-row").all()
+                
+                for linha in linhas_html:
+                    # Captura o texto de todas as células daquela linha específica
+                    celulas = linha.locator("td, div.x-grid3-col").all_inner_texts()
+                    
+                    if celulas and len(celulas) > 3: # Garante que é uma linha de dados real
+                        # Aqui está a mágica: substitui quebras de linha DENTRO da célula por espaço
+                        celulas_limpas = [texto.replace("\n", " - ").strip() for texto in celulas]
+                        linhas_brutas.append(celulas_limpas)
+            except Exception as e:
                 continue
 
         navegador.close()
