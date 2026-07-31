@@ -127,6 +127,7 @@ def capturar_e_limpar_relatorio():
             coluna_km = None
             coluna_dias = None
             coluna_tabela = None
+            coluna_frota = None  # Variável para pegar a coluna de Frota
 
             for col in df_final.columns:
                 col_str = str(col).lower().replace("ç", "c").replace("ã", "a")
@@ -138,6 +139,8 @@ def capturar_e_limpar_relatorio():
                     coluna_dias = col
                 elif "tabela" in col_str and not coluna_tabela:
                     coluna_tabela = col
+                elif "frota" in col_str and not coluna_frota:
+                    coluna_frota = col
 
             url_sheets = "https://script.google.com/macros/s/AKfycbwEMY8eHwKIGtd2fuHpvMmh_a14EAGzdf8Qgg41AKCiE_pOD4ifQFx4epFZklFYu46w/exec"
             dados_para_sheets = {}
@@ -148,11 +151,33 @@ def capturar_e_limpar_relatorio():
                     status_nome = str(status_val).strip()
                     status_lower = status_nome.lower()
 
+                    # Ignora os status que não importam
                     if status_lower in ["ok", "nan", ""]:
                         continue
 
                     df_sub = df_grupo.copy()
 
+                    # ==============================================================
+                    # FILTRO GLOBAL (Aplica tanto para A Vencer quanto para Vencidas)
+                    # ==============================================================
+                    
+                    # 1. Excluir Frotas iniciando em "V-"
+                    if coluna_frota:
+                        df_sub = df_sub[~df_sub[coluna_frota].astype(str).str.upper().str.startswith("V-")]
+                    
+                    if df_sub.empty:
+                        continue
+
+                    # Identifica se é a Tabela de Revisão Anual
+                    is_revisao_anual = pd.Series(False, index=df_sub.index)
+                    if coluna_tabela:
+                        is_revisao_anual = df_sub[coluna_tabela].astype(str).str.upper().str.contains(
+                            "TABELA BASICA VEICULOS REVISAO ANUAL", regex=False
+                        )
+
+                    # ==============================================================
+                    # LÓGICA: A VENCER
+                    # ==============================================================
                     if "vencer" in status_lower and "vencida" not in status_lower:
                         cond_km = pd.Series(True, index=df_sub.index)
                         cond_dias = pd.Series(True, index=df_sub.index)
@@ -161,24 +186,53 @@ def capturar_e_limpar_relatorio():
                             is_nao_controlada_km = df_sub[coluna_km].astype(str).str.lower().str.contains("nao controlada|não controlada")
                             s_km = df_sub[coluna_km].astype(str).str.replace(r'[^\d,-]', '', regex=True).str.replace(',', '.')
                             km_num = pd.to_numeric(s_km, errors='coerce')
-                            cond_km = (km_num <= 5000) | is_nao_controlada_km
+                            
+                            # Filtro Novo: Ajustado para <= 2500 KM
+                            cond_km_normal = (km_num <= 2500) | is_nao_controlada_km
 
                             if coluna_tabela:
-                                is_tabela_excecao = df_sub[coluna_tabela].astype(str).str.upper().str.contains(
-                                    "TABELA BASICA RODANTE SEMI REBOQUE BAU - 60.000 KM",
-                                    regex=False
+                                # Filtro Antigo Mantido: Exceção Semi Reboque 60.000 KM
+                                is_tabela_excecao_60k = df_sub[coluna_tabela].astype(str).str.upper().str.contains(
+                                    "TABELA BASICA RODANTE SEMI REBOQUE BAU - 60.000 KM", regex=False
                                 )
-                                cond_km = cond_km | is_tabela_excecao
+                                cond_km_normal = cond_km_normal | is_tabela_excecao_60k
+
+                            # Filtro Novo: Revisão Anual ignora diferença de KM 
+                            # (Se for revisão anual, libera como True independente do KM)
+                            cond_km = cond_km_normal | is_revisao_anual
 
                         if coluna_dias:
                             is_nao_controlada_dias = df_sub[coluna_dias].astype(str).str.lower().str.contains("nao controlada|não controlada")
                             s_dias = df_sub[coluna_dias].astype(str).str.replace(r'[^\d,-]', '', regex=True).str.replace(',', '.')
                             dias_num = pd.to_numeric(s_dias, errors='coerce')
-                            cond_dias = (dias_num <= 15) | is_nao_controlada_dias
+                            
+                            # Filtro Novo: Ajustado para <= 30 Dias
+                            cond_dias = (dias_num <= 30) | is_nao_controlada_dias
 
+                        # Aplica as condições combinadas para "A Vencer"
                         df_sub = df_sub[cond_km & cond_dias]
 
+                    # ==============================================================
+                    # LÓGICA: VENCIDAS
+                    # ==============================================================
+                    elif "vencida" in status_lower:
+                        # Se for Revisão Anual, ignorar KM e olhar apenas dias.
+                        # Na prática, se o veículo só está vencido por KM (mas dias > 0), ele é descartado.
+                        if coluna_dias:
+                            s_dias = df_sub[coluna_dias].astype(str).str.replace(r'[^\d,-]', '', regex=True).str.replace(',', '.')
+                            dias_num = pd.to_numeric(s_dias, errors='coerce')
+                            
+                            # Regra: Mantém tudo que NÃO for revisão anual. 
+                            # Se FOR revisão anual, só mantém se os dias estiverem vencidos (<= 0)
+                            cond_vencida = ~is_revisao_anual | (is_revisao_anual & (dias_num <= 0))
+                            
+                            df_sub = df_sub[cond_vencida]
+
+                    # ==============================================================
+                    # PREPARANDO OS DADOS PARA O SHEETS
+                    # ==============================================================
                     if not df_sub.empty:
+                        # Limpa caracteres não permitidos em abas do Google Sheets
                         nome_aba = re.sub(r'[\:\*\[\]\?\\\/]', '', status_nome)[:30]
 
                         matriz = [df_sub.columns.tolist()]
